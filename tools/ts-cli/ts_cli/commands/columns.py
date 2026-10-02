@@ -11,6 +11,17 @@ from ts_cli.client import ThoughtSpotClient
 app = typer.Typer(help="Column-level analysis commands.")
 
 
+def _export_doc(item, failures: list) -> "dict | None":
+    """Parse one TML export item, recording a failed one instead of reading it
+    as an empty document (see tml_common.export_item_doc)."""
+    from ts_cli.tml_common import export_item_doc
+    doc, reason = export_item_doc(item)
+    if reason:
+        failures.append(reason)
+        typer.echo(f"  WARNING: TML not exported — {reason}. Not checked.", err=True)
+    return doc
+
+
 def _post(client: ThoughtSpotClient, path: str, body: dict) -> "list | dict":
     resp = client.request("POST", path, json=body)
     return resp.json()
@@ -128,6 +139,9 @@ def impact_cmd(
     client = ThoughtSpotClient(profile)
 
     sep = "=" * 60
+    # Objects whose TML could not be exported (FORBIDDEN, invalid, ...). Each
+    # one is a pass that did NOT check that object — reported, never read as empty.
+    export_failures: list[str] = []
 
     # ── PASS 1: model column direct dependents ──────────────────────────
     typer.echo(f"\n{sep}", err=True)
@@ -151,12 +165,12 @@ def impact_cmd(
     typer.echo(sep, err=True)
 
     tml_resp = _post(client, "/api/rest/2.0/metadata/tml/export", {
+        "edoc_format": "JSON",
         "metadata": [{"identifier": model_guid}],
         "export_associated": False,
         "export_fqn": False,
     })
-    edoc_raw = tml_resp[0].get("edoc", "{}") if tml_resp else "{}"
-    model_doc = json.loads(edoc_raw) if isinstance(edoc_raw, str) else edoc_raw
+    model_doc = _export_doc(tml_resp[0] if tml_resp else None, export_failures) or {}
     formulas = model_doc.get("model", {}).get("formulas", [])
     broken_formulas = find_broken_formulas(formulas, physical_col)
 
@@ -251,12 +265,12 @@ def impact_cmd(
     typer.echo(sep, err=True)
 
     table_tml_resp = _post(client, "/api/rest/2.0/metadata/tml/export", {
+        "edoc_format": "JSON",
         "metadata": [{"identifier": table_guid}],
         "export_associated": False,
         "export_fqn": False,
     })
-    table_edoc_raw = table_tml_resp[0].get("edoc", "{}") if table_tml_resp else "{}"
-    table_doc = json.loads(table_edoc_raw) if isinstance(table_edoc_raw, str) else table_edoc_raw
+    table_doc = _export_doc(table_tml_resp[0] if table_tml_resp else None, export_failures) or {}
     rls_block = table_doc.get("table", {}).get("rls_rules", {})
     rls_rules_list = rls_block.get("rules", [])
     rls_paths = rls_block.get("table_paths", [])
@@ -334,6 +348,7 @@ def impact_cmd(
 
     try:
         feedback_resp = _post(client, "/api/rest/2.0/metadata/tml/export", {
+            "edoc_format": "JSON",
             "metadata": [{"identifier": model_guid, "type": "FEEDBACK"}],
             "export_associated": False,
         })
@@ -444,12 +459,14 @@ def impact_cmd(
     for i in range(0, len(sv_guids), BATCH):
         batch = sv_guids[i:i + BATCH]
         tml_batch = _post(client, "/api/rest/2.0/metadata/tml/export", {
+            "edoc_format": "JSON",
             "metadata": [{"identifier": g} for g, _ in batch],
             "export_associated": False,
         })
         for item in (tml_batch or []):
-            edoc_raw = item.get("edoc", "{}")
-            doc = json.loads(edoc_raw) if isinstance(edoc_raw, str) else edoc_raw
+            doc = _export_doc(item, export_failures)
+            if doc is None:
+                continue
             sv = doc.get("sql_view", {})
             if not sv:
                 continue
@@ -580,19 +597,21 @@ def impact_cmd(
             for i in range(0, len(cohort_candidates), BATCH):
                 batch = cohort_candidates[i:i + BATCH]
                 tml_resp2 = _post(client, "/api/rest/2.0/metadata/tml/export", {
+                    "edoc_format": "JSON",
                     "metadata": [{"identifier": g} for g, _, _ in batch],
                     "export_associated": False,
                 })
                 for item in (tml_resp2 or []):
-                    edoc_raw = item.get("edoc", "{}")
-                    doc = json.loads(edoc_raw) if isinstance(edoc_raw, str) else edoc_raw
+                    doc = _export_doc(item, export_failures)
+                    if doc is None:
+                        continue
                     cohort = doc.get("cohort", {})
                     config = cohort.get("config", {})
                     anchor = config.get("anchor_column_id", "")
                     name = cohort.get("name", "")
                     guid = doc.get("guid", "")
                     cohort_type = config.get("cohort_type", "")
-                    full_text = edoc_raw if isinstance(edoc_raw, str) else json.dumps(doc)
+                    full_text = json.dumps(doc)
                     if (anchor.lower() == column.lower()
                             or column.lower() in full_text.lower()
                             or physical_col.lower() in full_text.lower()):
@@ -668,12 +687,14 @@ def impact_cmd(
     try:
         for lb_guid in affected_lb_guids:
             bundle = _post(client, "/api/rest/2.0/metadata/tml/export", {
+                "edoc_format": "JSON",
                 "metadata": [{"identifier": lb_guid}],
                 "export_associated": True,
             })
             for item in (bundle or []):
-                edoc_raw = item.get("edoc", "{}")
-                doc = json.loads(edoc_raw) if isinstance(edoc_raw, str) else edoc_raw
+                doc = _export_doc(item, export_failures)
+                if doc is None:
+                    continue
                 if "monitor_alert" not in doc:
                     continue
                 for alert in (doc.get("monitor_alert") or []):
@@ -747,6 +768,7 @@ def impact_cmd(
         broken_alerts=broken_alerts,
         any_inaccessible=any_inaccessible,
     )
+    summary["export_failures"] = export_failures
 
     typer.echo(f"\n{sep}", err=True)
     typer.echo("IMPACT SUMMARY", err=True)

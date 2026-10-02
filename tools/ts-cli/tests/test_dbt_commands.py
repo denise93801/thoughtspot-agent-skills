@@ -1214,3 +1214,28 @@ class TestFailedStepLogExcerpt:
         from ts_cli.commands.dbt import failed_step_log_excerpt
         steps = [{"index": 4, "name": "dbt build", "status": 20, "status_humanized": "Error", "logs": ""}]
         assert failed_step_log_excerpt(steps) == "Failed step: dbt build (no log text returned)"
+
+
+def test_archive_upload_survives_a_retry(tmp_path):
+    """The client retries by re-sending the same `files=` kwargs. A file handle
+    is read during encoding, so the retry sent an empty archive (PR #506 review,
+    blocker 7). Encoding the form twice must carry the archive both times."""
+    from requests.models import RequestEncodingMixin
+    from ts_cli.commands.dbt import _attach_zip
+
+    archive = tmp_path / "artifacts.zip"
+    archive.write_bytes(b"PK\x03\x04 manifest+catalog")
+    form = {"connection_name": (None, "c")}
+    _attach_zip(form, archive)
+
+    first, _ = RequestEncodingMixin._encode_files(form, {})
+    retry, _ = RequestEncodingMixin._encode_files(form, {})
+    assert b"manifest+catalog" in first
+    assert b"manifest+catalog" in retry
+
+
+def test_no_archive_adds_no_file_field():
+    from ts_cli.commands.dbt import _attach_zip
+    form = {}
+    _attach_zip(form, None)
+    assert form == {}

@@ -18,6 +18,7 @@ from typing import Iterable, List, Optional
 import yaml
 
 from ts_cli.client import ThoughtSpotClient
+from ts_cli.tml_common import export_item_doc
 from ts_cli.commands.metadata import _build_dependents_payload, _normalize_dependents_response
 
 
@@ -174,6 +175,25 @@ def fetch_business_terms_and_ai_memory(
     return _fetch_business_terms(client, model_guid, targets) + _fetch_ai_memory(client, model_guid, targets)
 
 
+def _scan_sql_view_batch(client, guids, physical_column, hits: List[dict], failed: List[str]) -> None:
+    """Export one batch of SQL views, appending column hits and any item that
+    could not be exported."""
+    from .tml_probes import find_sql_view_column_uses
+    tml_resp = client.post("/api/rest/2.0/metadata/tml/export", json={
+        "metadata": [{"identifier": g} for g in guids],
+        "export_associated": False,
+        "edoc_format": "JSON",
+    })
+    for item in (tml_resp.json() or []):
+        doc, reason = export_item_doc(item)
+        if reason:
+            failed.append(reason)
+            continue
+        hit = find_sql_view_column_uses(doc, physical_column)
+        if hit:
+            hits.append(hit)
+
+
 def fetch_sql_view_hits(client: ThoughtSpotClient, physical_column: str) -> List[dict]:
     """Org-wide SQL views whose raw SQL text references `physical_column`.
 
@@ -205,20 +225,15 @@ def fetch_sql_view_hits(client: ThoughtSpotClient, physical_column: str) -> List
         return []
 
     hits: List[dict] = []
+    failed: List[str] = []
     batch = 10
     for i in range(0, len(sv_guids), batch):
-        chunk = sv_guids[i:i + batch]
-        tml_resp = client.post("/api/rest/2.0/metadata/tml/export", json={
-            "metadata": [{"identifier": g} for g in chunk],
-            "export_associated": False,
-        })
-        for item in (tml_resp.json() or []):
-            edoc_raw = item.get("edoc", "{}")
-            doc = _json.loads(edoc_raw) if isinstance(edoc_raw, str) else edoc_raw
-            from .tml_probes import find_sql_view_column_uses
-            hit = find_sql_view_column_uses(doc, physical_column)
-            if hit:
-                hits.append(hit)
+        _scan_sql_view_batch(client, sv_guids[i:i + batch], physical_column, hits, failed)
+    if failed:
+        # A view we could not read may well reference the column; returning the
+        # partial list would read as "checked, none found" (PR #506 review,
+        # blocker 7). Raising marks the SQL-views row unchecked instead.
+        raise RuntimeError(f"{len(failed)} SQL view(s) could not be exported: " + "; ".join(failed))
     return hits
 
 

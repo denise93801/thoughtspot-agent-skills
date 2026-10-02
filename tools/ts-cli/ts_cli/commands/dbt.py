@@ -99,6 +99,20 @@ def _load_dbt_profile(name: Optional[str]) -> Optional[dict]:
     return p
 
 
+def _attach_zip(form: Dict[str, Any], zip_path) -> None:
+    """Add the artifact archive to a multipart form as BYTES, not a file handle.
+
+    ThoughtSpotClient retries a request (401 re-auth, 502/503/504, timeouts) by
+    re-sending the same kwargs. requests reads a file handle while encoding, so
+    the retry read from EOF and uploaded an EMPTY archive — replacing the
+    connection's stored manifest and catalog with nothing and printing the 200
+    as success (PR #506 review, blocker 7). Bytes re-encode identically on
+    every attempt.
+    """
+    if zip_path:
+        form["file_content"] = (zip_path.name, zip_path.read_bytes(), "application/zip")
+
+
 def _multipart_fields(fields: Dict[str, Optional[str]]) -> Dict[str, Any]:
     """Build the `files=` dict for a dbt form request, dropping unset fields.
 
@@ -171,12 +185,8 @@ def create_connection(
         "project_name": project_name,
     })
     client = ThoughtSpotClient(resolve_profile(profile))
-    if zip_path:
-        with open(zip_path, "rb") as fh:
-            form["file_content"] = (zip_path.name, fh, "application/zip")
-            resp = client.post("/api/rest/2.0/dbt/dbt-connection", files=form)
-    else:
-        resp = client.post("/api/rest/2.0/dbt/dbt-connection", files=form)
+    _attach_zip(form, zip_path)
+    resp = client.post("/api/rest/2.0/dbt/dbt-connection", files=form)
     print(json.dumps(resp.json()))
 
 
@@ -220,12 +230,8 @@ def update_connection(
         "project_name": project_name,
     })
     client = ThoughtSpotClient(resolve_profile(profile))
-    if zip_path:
-        with open(zip_path, "rb") as fh:
-            form["file_content"] = (zip_path.name, fh, "application/zip")
-            resp = client.post("/api/rest/2.0/dbt/update-dbt-connection", files=form)
-    else:
-        resp = client.post("/api/rest/2.0/dbt/update-dbt-connection", files=form)
+    _attach_zip(form, zip_path)
+    resp = client.post("/api/rest/2.0/dbt/update-dbt-connection", files=form)
     if resp.text.strip():
         print(json.dumps(resp.json()))
 
@@ -268,12 +274,8 @@ def _generate(
     )
     form: Dict[str, Any] = _multipart_fields(fields)
     client = ThoughtSpotClient(resolve_profile(profile))
-    if zip_path:
-        with open(zip_path, "rb") as fh:
-            form["file_content"] = (zip_path.name, fh, "application/zip")
-            resp = client.post(path, files=form)
-    else:
-        resp = client.post(path, files=form)
+    _attach_zip(form, zip_path)
+    resp = client.post(path, files=form)
     print(json.dumps(resp.json()))
 
 

@@ -204,3 +204,51 @@ class TestWalkOneHop:
         assert len(rows) == 1
         assert rows[0]["hops"] == 2
         assert rows[0]["guid"] == "ans-1"
+
+
+class TestExportItemDoc:
+    """`metadata/tml/export` items can fail individually inside an HTTP 200
+    (PR #506 review, blocker 7; shapes live-verified 2026-10-02)."""
+
+    def test_json_edoc(self):
+        from ts_cli.tml_common import export_item_doc
+        item = {"info": {"name": "T", "status": {"status_code": "OK"}}, "edoc": '{"table": {"name": "T"}}'}
+        assert export_item_doc(item) == ({"table": {"name": "T"}}, None)
+
+    def test_yaml_edoc_is_accepted(self):
+        from ts_cli.tml_common import export_item_doc
+        item = {"info": {"status": {"status_code": "OK"}}, "edoc": "table:\n  name: T\n"}
+        assert export_item_doc(item) == ({"table": {"name": "T"}}, None)
+
+    def test_forbidden_item_with_null_edoc_is_a_failure_not_empty(self):
+        from ts_cli.tml_common import export_item_doc
+        item = {"info": {"name": "Credits Purchased", "status": {
+                    "status_code": "ERROR",
+                    "error_message": "Error Code: FORBIDDEN Incident Id: x\nmore detail"}},
+                "edoc": None}
+        doc, reason = export_item_doc(item)
+        assert doc is None
+        assert reason == "Credits Purchased: Error Code: FORBIDDEN Incident Id: x"
+
+    def test_missing_edoc_is_a_failure(self):
+        from ts_cli.tml_common import export_item_doc
+        doc, reason = export_item_doc({"info": {"id": "g-1"}})
+        assert doc is None and reason == "g-1: no TML returned"
+
+
+def test_sql_view_probe_fails_when_a_view_cannot_be_exported():
+    """A view we could not read may reference the column, so the probe must
+    fail (row unchecked) rather than return a partial hit list."""
+    from unittest.mock import MagicMock
+    import pytest
+    from ts_cli.report import impact_probes
+
+    client = MagicMock()
+    search = MagicMock(); search.json.return_value = [
+        {"metadata_id": "v-1", "metadata_name": "V1", "metadata_header": {"type": "SQL_VIEW"}}]
+    export = MagicMock(); export.json.return_value = [
+        {"info": {"name": "V1", "status": {"status_code": "ERROR", "error_message": "FORBIDDEN"}},
+         "edoc": None}]
+    client.post.side_effect = [search, export]
+    with pytest.raises(RuntimeError, match="could not be exported"):
+        impact_probes.fetch_sql_view_hits(client, "AMOUNT")

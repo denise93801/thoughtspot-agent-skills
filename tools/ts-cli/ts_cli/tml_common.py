@@ -6,8 +6,9 @@ functions, stdlib + PyYAML only — part of the Genie-vendorable closure.
 """
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 #: Sentinel accepted by `--tables` on every `build-model` that takes a tables map
 #: (`ts snowflake`, `ts databricks`): derive the map from the parse output instead
@@ -230,3 +231,43 @@ def derive_viz_obj_id(model_name: str, model_fqn: str) -> str:
     slug = "".join(model_name.split())
     guid8 = (model_fqn or "").split("-")[0]
     return f"{slug}-{guid8}" if guid8 else slug
+
+
+def export_item_doc(item: Any) -> Tuple[Optional[dict], Optional[str]]:
+    """One `metadata/tml/export` response item -> `(parsed doc, None)`, or
+    `(None, reason)` when the item carries no usable document.
+
+    An item can fail on its own inside an HTTP 200: a FORBIDDEN or invalid
+    object comes back with `info.status.status_code` set and `edoc: null`
+    (live-verified 2026-10-02 on embed-1 staging, an Org-Model the user may not
+    download). `item.get("edoc", "{}")` returns that None rather than the
+    default, which crashed the caller, and an absent key parsed as `{}` — a
+    permission failure that read as "no formulas, no rules" (PR #506 review,
+    blocker 7). Callers must treat a reason as "not checked", never as empty.
+
+    `edoc` is JSON by default (`edoc_format` defaults to JSON in the
+    exportMetadataTML spec, and a live export without it returned JSON); YAML is
+    accepted too, so a caller that asked for YAML can use this as well.
+    """
+    if not isinstance(item, dict):
+        return None, "no export item returned"
+    info = item.get("info") or {}
+    status = info.get("status") or {}
+    label = info.get("name") or info.get("id") or "object"
+    edoc = item.get("edoc")
+    code = status.get("status_code")
+    if (code and code != "OK") or edoc in (None, ""):
+        message = (status.get("error_message") or "").strip().splitlines()
+        detail = message[0] if message else (f"status {code}" if code else "no TML returned")
+        return None, f"{label}: {detail}"
+    if isinstance(edoc, dict):
+        return edoc, None
+    try:
+        doc = json.loads(edoc)
+    except ValueError:
+        import yaml
+        doc = yaml.safe_load(edoc)
+    if not isinstance(doc, dict):
+        return None, f"{label}: exported TML is not a mapping"
+    return doc, None
+
