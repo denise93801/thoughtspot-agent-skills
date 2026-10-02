@@ -8,15 +8,15 @@ model authoring, multi-tenancy governance, and data querying. Packaged for
 
 ## Skills
 
-30 skills across six categories. Each ✓ in the runtime columns links to the
+32 skills across six categories. Each ✓ in the runtime columns links to the
 SKILL.md for that runtime. For why an individual skill exists, who tends to need it,
 and when to reach for it, see [skill personas](docs/skill-personas.md).
 
 | Category | Problem it solves | Skills |
 |---|---|:-:|
 | [Setup](#setup) | Nothing else runs until credentials and data exist | 8 |
-| [Conversion](#conversion) | The semantics already exist elsewhere, and rebuilding them by hand is what stalls a migration | 9 |
-| [Semantic Authoring](#semantic-authoring) | A Model that imports cleanly can still answer badly or run slowly | 5 |
+| [Conversion](#conversion) | The semantics already exist elsewhere, and rebuilding them by hand is what stalls a migration | 10 |
+| [Semantic Authoring](#semantic-authoring) | A Model that imports cleanly can still answer badly or run slowly | 6 |
 | [Platform & Governance](#platform--governance) | Many audiences, one definition, without a copy per tenant | 5 |
 | [Query](#query) | Getting data out programmatically, and seeing the SQL behind a disputed number | 1 |
 | [Recipes](#recipes) | The same analytical need recurs account after account | 2 |
@@ -59,6 +59,7 @@ and when to reach for it, see [skill personas](docs/skill-personas.md).
 | [`ts-convert-to-snowflake-sv`](agents/cli/ts-convert-to-snowflake-sv/SKILL.md) | Convert a ThoughtSpot model to a Snowflake Semantic View (single, split by domain, or update existing) | Snowflake | [coverage](agents/cli/ts-convert-to-snowflake-sv/references/coverage-matrix.md) | [✓](agents/cli/ts-convert-to-snowflake-sv/SKILL.md) | [✓](agents/coco-snowsight/ts-convert-to-snowflake-sv/SKILL.md) | — |
 | [`ts-convert-from-snowflake-sv`](agents/cli/ts-convert-from-snowflake-sv/SKILL.md) | Convert a Snowflake Semantic View into a ThoughtSpot Model (single, merge multiple, or update existing) | Snowflake | [coverage](agents/cli/ts-convert-from-snowflake-sv/references/coverage-matrix.md) | [✓](agents/cli/ts-convert-from-snowflake-sv/SKILL.md) | [✓](agents/coco-snowsight/ts-convert-from-snowflake-sv/SKILL.md) | — |
 | [`ts-convert-from-tableau`](agents/cli/ts-convert-from-tableau/SKILL.md) | Convert a Tableau workbook (.twb/.twbx) into ThoughtSpot table + model TMLs, with optional dashboard-to-liveboard migration | Tableau | [coverage](agents/cli/ts-convert-from-tableau/references/coverage-matrix.md) | [✓](agents/cli/ts-convert-from-tableau/SKILL.md) | — | — |
+| [`ts-link-semantic-layer`](agents/cli/ts-link-semantic-layer/SKILL.md) | **Link, don't convert:** register a Snowflake Semantic View, Databricks Metric View, Honeydew, Cube or Kyvos object as one Table plus a thin, formula-free Model, so the platform generates the SQL from its own definitions. Carries descriptions, synonyms, ai_context and Spotter instructions; one switch sets measures to `AGGREGATE` or their standard aggregation | Any semantic layer | — | [✓](agents/cli/ts-link-semantic-layer/SKILL.md) | — | — |
 
 </details>
 
@@ -71,10 +72,12 @@ and when to reach for it, see [skill personas](docs/skill-personas.md).
 | Skill | What it does | CLI | Snowsight | DBX |
 |---|---|:-:|:-:|:-:|
 | [`ts-object-model-coach`](agents/cli/ts-object-model-coach/SKILL.md) | Prepare a Model for Spotter — review AI Context, synonyms, mine dependent objects, generate improvements | [✓](agents/cli/ts-object-model-coach/SKILL.md) | — | — |
+| [`ts-object-set-manager`](agents/cli/ts-object-set-manager/SKILL.md) | Inventory reusable Sets — dependents, delete/answer-level candidates, grant provenance (report only) | [✓](agents/cli/ts-object-set-manager/SKILL.md) | — | — |
 | [`ts-object-model-erd`](agents/cli/ts-object-model-erd/SKILL.md) | Render a Model into a self-contained HTML ERD — tables, joins, columns, RLS, findings — shareable without ThoughtSpot login | [✓](agents/cli/ts-object-model-erd/SKILL.md) | — | — |
 | [`ts-object-model-aggregates`](agents/cli/ts-object-model-aggregates/SKILL.md) | Audit a Model's Liveboards/Answers to recommend, generate, and wire aggregate Models (26.6 aggregate-aware routing) — signature mining, cost-based candidate ranking, gated DDL/TML generation ⚠️ pre-merge, open items unverified | [✓](agents/cli/ts-object-model-aggregates/SKILL.md) | — | — |
 | [`ts-object-model-alias`](agents/cli/ts-object-model-alias/SKILL.md) | Manage column aliases on a Model — language localization, tenant-based renaming, and combined tenant + locale matrices, via the `ts alias export/translate/build/import` pipeline | [✓](agents/cli/ts-object-model-alias/SKILL.md) | — | — |
 | [`ts-object-answer-promote`](agents/cli/ts-object-answer-promote/SKILL.md) | Promote formulas and parameters from a saved Answer into a Model | [✓](agents/cli/ts-object-answer-promote/SKILL.md) | — | — |
+| [`ts-object-calendar-builder`](agents/cli/ts-object-calendar-builder/SKILL.md) | Build week-aligned 4-4-5 / 4-5-4 / 5-4-4 / 13-period custom calendars with correct 52/53-week tiling, custom labels and RLS union calendars | [✓](agents/cli/ts-object-calendar-builder/SKILL.md) | — | — |
 
 </details>
 
@@ -203,7 +206,8 @@ thoughtspot-agent-skills/
     ├── ts-cli/     — ThoughtSpot CLI used by CLI skills at runtime
     ├── validate/   — Static validators (runtime coverage, consistency)
     ├── fixtures/   — Captured cluster topologies for `ts tenancy` (reference multi-tenancy environment)
-    └── smoke-tests/ — End-to-end smoke tests requiring live credentials
+    ├── smoke-tests/ — End-to-end smoke tests requiring live credentials
+    └── ossie-roundtrip/ — Round-trips real Models through the Apache Ossie converter (lives upstream)
 ```
 
 ---

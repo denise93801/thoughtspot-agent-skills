@@ -47,7 +47,7 @@ ts_cli/
   migrate/apply_exec.py -- Phase 2 executor: export, rewrite, import. Runs the per-object COVERAGE GATE before writing anything (residual_references), because a partial rewrite imports cleanly and RENDERS WRONG -- so it is caught at plan time rather than by a user later. Views are rewritten before content so that in a new-Org run the View exists before anything references it, and shielded content is never in the content batch at all
   migrate/aliases.py -- per-wave alias assembly (spec step 7). ONE merge per wave, never per tenant: aliases live on the Primary Org's Model with no delta update until 26.10, so every append re-imports the WHOLE document -- per tenant that is O(N^2) across a fleet and past 5 MB each import goes async at 10-15 minutes. translations_from_mapping derives the aliases from the approved `column-mapping.csv` as the exact INVERSE of the rename `apply` performed (`column` = published name, `alias` = tenant's, scope always TS_WILDCARD_ALL), because hand-transcribing them is a step whose mistakes are silent -- a misspelled column aliases nothing and the tenant sees the physical name. missing_org_coverage is THE catastrophic check: the import REPLACES the document, so an export that came back partial silently strips every already-cut-over Org it missed. Coverage is by ORG not by COUNT, since a count is satisfiable by the wrong Orgs -- ten aliases for one tenant pass "ten or more" while nine tenants are wiped -- and naming the Org makes the refusal actionable. The transform and the overlap rule are REUSED from ts_cli/alias.py rather than restated, which is why `flatten_columns` is public there (pure functions, no I/O)
   migrate/discover.py -- what the migration reads before it writes anything, and the ONE place the source/target distinction is decided. OWNERSHIP is the discriminator, never the name: during a migration an Org holds both its own Model and the published master under the SAME name, so `select_source` requires the Org to OWN the Model and `select_target` requires that it does NOT (plus excluding the source GUID outright). A name-only lookup paired a Model with ITSELF in the same-Org topology and reported READY with every column MATCHED and an empty rename map -- a no-op that passed every gate (BL-152). Either selector RAISES `AmbiguousModelName` rather than picking, because both wrong answers are silent: the wrong source migrates the master's own dependents, the wrong target repoints content onto the object it is moving off. `exclude_owner_org_id` must be None across clusters -- Org ids mean nothing between them and `Primary` is `0` on both. Also holds `dependents_through_views` (Views-only, depth-capped, cycle-guarded -- a single-hop walk hides exactly what a View shields) and `subtypes_by_guid` (batched, since what a dependent SITS ON is what sizes the migration). The selection rules are pure (`select_source`/`select_target`) so they are testable without a client; the rest is I/O
-  migrate/sets_scan.py -- Phase 0 `ts migrate scan-sets` engine: cohort-column detection (is_cohort_row/extract_cohort_columns -- matched on the COHORT_ PREFIX, because missing a future subtype variant means reporting a BLOCKED Model as clean), the actionable dependent list (normalise_dependents -- Answers/Liveboards only, since "blocked by these four Answers" is a decision a tenant can act on while "blocked" alone is a dead end), and the fleet roll-up (build_scan_report/render_scan_markdown, carrying the DENOMINATOR because "three of twelve" sizes the problem and "three" does not). Detection MUST go through metadata/search: a cohort column is invisible in the Model's TML, so a TML inspection reports a clean Model that is in fact blocked and a lift-and-shift drops the Set silently (pure functions, no I/O)
+  migrate/sets_scan.py -- Phase 0 `ts migrate scan-sets` engine: the actionable dependent list (normalise_dependents -- Answers/Liveboards only, since "blocked by these four Answers" is a decision a tenant can act on while "blocked" alone is a dead end), and the fleet roll-up (build_scan_report/render_scan_markdown, carrying the DENOMINATOR because "three of twelve" sizes the problem and "three" does not). Detection lives in `sets/discover.py` (BL-325: per-Model cohort listing, membership by `cohortConfig` not header type; a failed listing maps to a `(discovery incomplete)` sentinel so the Model reports BLOCKED). It must never be a TML inspection: a cohort column is invisible in the Model's TML, so that reports a clean Model that is in fact blocked and a lift-and-shift drops the Set silently (pure functions, no I/O)
   promote.py           — Formula promotion merge (extract_answer_formulas/detect_duplicates/map_references/build_merged_model) behind `ts model promote-formula` (pure functions, no I/O; BL-066)
   aggregate/
     __init__.py          — package marker
@@ -167,7 +167,18 @@ Each command group is a separate module in `commands/`. `cli.py` imports and reg
 ## Version sync
 
 `ts_cli/__init__.py __version__` must always match `pyproject.toml version`. Bump both together.
-Current version: **0.138.0**. Run `python tools/validate/check_version_sync.py` to verify.
+The new version must also be **unreleased** — not `main`'s version, and not one already
+marked `bump ts-cli to vX.Y.Z` in `CHANGELOG.md`. Two branches picking the same number
+merge without a conflict, so this is gated rather than trusted (BL-274).
+
+```bash
+python tools/validate/check_version_sync.py                      # consistency
+python tools/validate/check_version_sync.py --base origin/main   # + novelty, as CI runs it
+```
+
+No current version is written here on purpose: a hand-maintained copy of a value already
+gated in two files is drift waiting to happen, and this line carried 0.135.0 for six
+releases while reading as authoritative to every session that loaded it (BL-273).
 
 ## Required dependencies
 
@@ -204,8 +215,7 @@ used anywhere in the repo.
 3. Add a reference entry to `README.md`
 4. Update any `SKILL.md` that uses the command
 5. Add unit tests in `tools/ts-cli/tests/`
-6. Bump version in both `__init__.py` and `pyproject.toml` — **once per PR, not
-   once per command.** See the timing rule below.
+6. Bump version in both `__init__.py` and `pyproject.toml` — to an unreleased number (see Version sync)
 
 ### Version bump timing
 
@@ -238,5 +248,5 @@ were exposed to it.
 3. Add unit tests in `tools/ts-cli/tests/` covering the check's logic.
 4. Add a row to `agents/cli/ts-audit/references/check-catalog.md` with the check ID,
    what it detects, and severity logic.
-5. Bump version in both `__init__.py` and `pyproject.toml`.
+5. Bump version in both `__init__.py` and `pyproject.toml`, to an unreleased number (see Version sync).
 6. Run `pytest tools/ts-cli/tests/` and `python tools/validate/check_version_sync.py`.

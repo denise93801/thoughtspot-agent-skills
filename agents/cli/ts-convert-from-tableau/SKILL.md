@@ -160,7 +160,7 @@ When the user picks **M**, immediately ask **what to migrate** — this decides 
   3.  Parse TWB XML — extract tables, columns, joins,
       calculated fields, blend relationships,
       table-calc addressing ............................ auto
-  3.5 Resolve published datasources (sqlproxy → API) ... auto/you choose  [scope 1,2,4,5]
+  3.5 Resolve published datasources (API or .tds) ... auto/you choose  [scope 1,2,4,5]
   3.6 Confirm joins (present/suggest/range join option) . you confirm   [scope 1,2,4]
   4.  Confirm source tables (reuse/GUID/create/search) ..... you choose  [scope 1,2,4,5]
   4.5 Select ThoughtSpot connection (create path only) .... you choose  [scope 1,2,5]
@@ -473,8 +473,10 @@ ts tableau parse "{twb_path}" --output /tmp/ts_tableau_mig/{workbook_name}_parse
 
 The JSON contains `datasources[]` (each with `tables`, `columns`, `joins`,
 `calculated_fields`, `calc_map`, `col_table_map`, `orphan_calcs`), `parameters`,
-`param_map`, `blends`, and `table_calc_addressing`. All subsequent steps read
-these fields instead of re-deriving them.
+`param_map`, `blends`, `table_calc_addressing`, `dashboards`, `sets_detected`, and
+`skipped_datasources` (datasources found but not migrated, with a reason — check it
+whenever the datasource count looks low). All subsequent steps read these fields
+instead of re-deriving them.
 
 The parse output (from the `ts tableau parse` call above) contains the following, extracted from the TWB's XML structure:
 
@@ -572,7 +574,8 @@ read it from the parse-JSON `table_calc_addressing.column_level` field (Step 3):
 calc internal ID (e.g. `[Calculation_953355781789577216]`), each entry has
 `ordering_type` (`Rows` | `Columns` | `Table` | `CellInPane` | `Field`), `ordering_field`,
 `order_fields` (list), `quick_calc_type` (`PctTotal` | `PctDiff` | `Difference` |
-`PctRank` | `None`), and `address_offset` (int or `None`).
+`PctRank` | `None`), `address_offset` (int or `None`), and `address_value` (the raw
+`<address><value>` token, or `None` when the element is absent).
 
 Each `<worksheet>`'s `<column-instance>` elements can carry their own `<table-calc>` —
 these are **view-level overrides** that take precedence over the column-level definition
@@ -583,6 +586,13 @@ keyed by worksheet name then calc ID).
 1. Check `table_calc_addressing.ws_overrides[W][calc_id]` — view-level override
 2. Fall back to `table_calc_addressing.column_level[calc_id]` — column-level definition
 3. If neither exists, treat as `ordering_type='Rows'` (Tableau default)
+
+`table_calc_addressing.warnings` (also echoed to stderr) lists entries whose
+`<address><value>` was non-numeric — Tableau writes `false` / `"All Pages"` there for
+non-offset addressing modes. Those entries parse normally except `address_offset`, which
+is `None`; the token itself is kept in `address_value`, so a non-offset mode is
+distinguishable from an absent `<address>` (where both are `None`) without reading the
+warning text. It is a **skip, not a failure**: note it in the Step 12 report, don't stop.
 
 ---
 
@@ -619,24 +629,20 @@ from `orphan_calcs` so they enter the translation pipeline.
 
 ## Step 3.5 — Resolve Published Datasources (sqlproxy)
 
-> Runs only if Step 3 detected one or more datasources with `<connection class="sqlproxy">`
-> (TWB `<connection class="sqlproxy">` with a `dbname` naming the published datasource).
-> Skipped entirely if all datasources have direct warehouse connections.
+> Runs only if Step 3 found a `<connection class="sqlproxy">` (its `dbname` names the
+> published datasource). Skipped when every datasource connects to a warehouse directly.
 
-The TWB already carries every calculated field, column definition, and metadata record for
-a published datasource — what it lacks is the **physical table structure** (tables, joins,
-db/schema paths), which lives only in the datasource's `.tds`. Formula extraction and
-translation work from the TWB alone; resolving the physical model needs either the Tableau
-API or a supplied `.tds`/`.tdsx`. Full detail (what's in/out of the TWB, how to get the
-`.tds`, the field-resolution and CSV-download mechanics) is in
-[references/step-3-parse-fields.md](references/step-3-parse-fields.md) "Published
+The TWB carries the calculated fields and column definitions; it lacks the **physical table
+structure** (tables, joins, db/schema paths), which lives only in the datasource's `.tds`.
+Resolving it needs either the Tableau API or the `.tds`/`.tdsx` itself. Detail — what's
+in/out of the TWB, how to get the `.tds`, field-resolution and CSV-download mechanics — is
+in [references/step-3-parse-fields.md](references/step-3-parse-fields.md) "Published
 datasource (sqlproxy) resolution detail (Step 3.5)".
 
 ### Flow
 
-> **ASK before querying the Tableau API.** The user may be a consultant conducting a remote
-> migration without access to the customer's Tableau Server. Do NOT attempt any API call
-> before asking — a failed API call wastes 30–60 seconds and confuses the flow.
+> **ASK before any API call.** The user may have no access to the customer's Server — a
+> failed call wastes 30–60 seconds and confuses the flow.
 
 Prompt — **always, before any API call**:
 
@@ -646,15 +652,18 @@ Found {N} published datasource(s) hosted on Tableau Server:
   - {ds_caption_2} ({M} columns, {C} calculated fields extracted from TWB)
 
 The TWB already contains all column definitions and calculated fields.
-The Tableau API would additionally resolve the physical table structure
-(table names, joins, db/schema paths) — but this is optional.
+What's missing is the physical model (table names, joins, db/schema paths).
+It can come from the Server, or from the .tds file itself.
+  Y  Yes, I have Server access — query the Tableau API   (requires /ts-profile-tableau)
+  T  I have the .tds/.tdsx file(s)  — parse them directly
+  N  Neither — proceed with TWB metadata only            (consultant/remote migrations)
 
-Do you have access to the Tableau Server hosting these datasources?
-  Y  Yes — query the Tableau API for table structure   (requires /ts-profile-tableau)
-  N  No  — proceed with TWB metadata only              (common for consultant/remote migrations)
-
-Enter Y / N:
+Enter Y / T / N:
 ```
+
+**T (has the file)** — ask for each path, `ts tableau parse {file}.tds`, merge its
+tables/joins/db-schema into the matching parsed datasource, then proceed to Step 4 as **Y**
+does. No Server access needed; `parse` accepts `.tds`/`.tdsx` directly.
 
 **N (no API access)** — proceed with TWB-embedded metadata (columns + calc fields already
 extracted; physical table names come from `<metadata-record>` `parent-name`). **Skip to
@@ -973,8 +982,8 @@ only if they're unsure, fetch the connection schema to resolve names:
 ```bash
 ts connections get {connection_id} --profile {profile_name}
 ```
-This can be slow and returns 404 on some connection types — **fallback, not the default**.
-If it returns no tables (empty `externalDatabases`) or fails, ask the user for the names.
+**Expect nothing back** — live-probed 2026-08-26, the warehouse hierarchy is empty for
+every auth type. Ask the user and take the names from them.
 
 A connection is **required** for any table being created — there is no skip path. A
 ThoughtSpot table is a logical object over a **live** connection to a physical table that
@@ -1332,17 +1341,17 @@ For each custom SQL relation identified in Step 3b (those with `source_type: "cu
 a `.sql_view.tml` file is generated. Follow the rules in `tableau-tml-rules.md` "SQL View
 TML Rules" and the full schema in `thoughtspot-sql-view-tml.md`.
 
+> **Emitted names may be qualified.** A name contested across the workbook becomes
+> `Base (Datasource)` — object name and filename both. See that file's "Name uniqueness
+> is workbook-wide", which also covers hand assembly.
+
 **Template:** see [references/step-5-tml-generation.md](references/step-5-tml-generation.md)
 "SQL View TML template (Step 5c)" for the full YAML shape.
 
-Key rules:
+Key rules (the rest are in `tableau-tml-rules.md` "Key differences from table TML"):
 - `connection.name` is **required** — use `{connection_name}` from Step 4.5
 - `sql_query` contains the full SQL text from the Tableau `<relation>` element (decode
   HTML entities)
-- `sql_output_column` must match a column name or alias from the SQL query output
-- Map Tableau column datatypes to ThoughtSpot types using the same mapping as table TMLs
-- No `db`, `schema`, `db_table`, or `db_column_properties` fields
-- File extension: `*.sql_view.tml`
 
 Write each file to `/tmp/ts_tableau_mig/output/{workbook_name}/{Name}.sql_view.tml`.
 
@@ -1658,8 +1667,11 @@ Save `{parked_formulas}` (the remaining parked list) for Steps 12 and 12.5.
 ---
 
 Report validation warnings regardless of pace:
-- If `validation_warnings` is non-empty: surface warnings — these indicate formulas
-  that may have syntax issues but were still attempted
+- If `validation_warnings` is non-empty: surface warnings. Entries are not all about
+  formulas — an entry marked `kind: "join"` reports a join `_extract_joins` skipped
+  (its `name` is the datasource, not a formula), and belongs in the report's Join
+  warnings section. An entry without that marker is a formula that may have syntax
+  issues but was still attempted.
 
 Do **not** manually assemble TML, write Python scripts to add formulas, or call
 `ts tml import` directly for Phase 2. The `build-model --existing-guid` command
@@ -2476,9 +2488,8 @@ suggested-but-unverified with its tokens for manual follow-up.
 
 | Version | Date | Summary |
 |---|---|---|
-| 1.40.1 | 2026-08-26 | Use `ts metadata search --connection` instead of hand-filtering `dataSourceName`; the old instruction said **equals** where the CLI casefolds, so it dropped rows the CLI keeps (finding 11.1). |
-| 1.40.0 | 2026-07-30 | **BL-171 — `TRIM` stops emitting a bare `trim ( )`, and `LTRIM`/`RTRIM` are newly translated (ts-cli v0.126.1).** v1.39.2 corrected the mapping doc but left `ts_cli/tableau/functions.py` rewriting `TRIM(` → `trim ( `, which fails at import (`error_code 14516`) — that regex rewrite is gone and `TRIM` now joins `UPPER`/`LOWER`/`REPLACE`/`STARTSWITH`/`ENDSWITH` in `_ARG_HANDLERS`, emitting `sql_string_op ( "TRIM({0})" , s )`. `LTRIM`/`RTRIM` are **newly emitted** (they had no mapping at all — hence MINOR), completing coverage-matrix row #136 and the L9 pass-through list. 6 new tests including nesting (`TRIM(TRIM(x))`, `UPPER(TRIM(x))`). **All three emitted forms live-verified on se-thoughtspot 2026-07-30** (`VALIDATE_ONLY`, nothing persisted). |
-| 1.39.2 | 2026-07-29 | **BL-170 — corrected `TRIM` to a pass-through (docs only; CLI fix is BL-171).** Live verification on se-thoughtspot 2026-07-29 proved `trim` is **not** a native ThoughtSpot formula function (rejected with `Search did not find "trim ("`, the same signature as `upper`/`lower`). `tableau-formula-translation.md`'s `TRIM(s)` row moved from the native `trim ( s )` to `sql_string_op ( "TRIM({0})" , s )`, and `LTRIM`/`RTRIM` rows were added alongside it; the Pass-Through Fallback table and the CLI-status list gained the same three entries. `references/coverage-matrix.md` #18 dropped `TRIM` (now #135) and #136 covers `LTRIM`/`RTRIM`. `REPLACE`, `STARTSWITH` and `ENDSWITH` were **re-confirmed correct** in the same pass — no change. **Caveat: `ts_cli/tableau/functions.py` still rewrites `TRIM(` → `trim ( `, so translated formulas containing `TRIM` still fail at import until BL-171 lands** — review them by hand meanwhile. |
-| 1.39.0 | 2026-07-23 | **Translate inverse trig (`ACOS`/`ASIN`/`ATAN`) + `COT` (BL-072 sub-item) and `USERNAME`/`ISUSERNAME`/`ISMEMBEROF` → RLS system variables (BL-071 subset).** Prereq ts-cli v0.88.0 — no skill-instruction changes, `translate-formulas`'s own output is more correct. ThoughtSpot's `acos`/`asin`/`atan` return degrees where Tableau's return radians (by symmetry with the already-shipped `SIN`/`COS`/`TAN` conversion), so each composites `* pi/180` back to radians; `COT(x)` composites off `tan` per Tableau's own `COT(x) = 1/tan(x)` definition. `USERNAME()` → bare `ts_username`; `ISUSERNAME(s)` → `( ts_username = s )`; `ISMEMBEROF("group")` → `( ts_groups = 'group' )` (previously passed through untranslated and un-rejected — now genuinely translated). All seven removed from `_UNMAPPED_FUNCTIONS`. `FULLNAME`/`ISFULLNAME`/`USERDOMAIN`/`USERATTRIBUTE`/`USERATTRIBUTEINCLUDES` (no confirmed ThoughtSpot semantic, or `ts_var()` not yet accepted in Model/Answer formulas) and hierarchies/value aliases (the other BL-072 sub-item) remain deferred and rejected — out of scope for this change. `references/coverage-matrix.md` #32/U8 → #132/#133, U7's `USERNAME`/`ISUSERNAME` → #134, #108 (`ISMEMBEROF`) moved from pass-through note to Mapped Constructs. `docs/backlog.md` BL-071/BL-072 statuses updated to PARTIAL. |
+| 1.44.0 | 2026-09-25 | **SCAL-338494 — Tableau's `:Measure Names` pivot pseudo-field was emitted as a real column (prereq ts-cli v0.148.0).** It arrives as an ordinary `<column>` but names no warehouse column, so it reached Model and Table TML with a `column_id` resolving to nothing — and no gate saw it: on a single-table model the id is table-qualified and the same phantom is written into that table's TML, so the cross-reference check resolves it; on a multi-table model the id is bare and I12 is scoped out. Now excluded during column cleanup, kept out of Liveboard/Answer fields, and any formula referencing it is dropped — cascading to dependants, since a survivor would emit a reference to a column the model no longer has. `ts tableau verify` replays that decision so a deliberate removal is not reported as a silent drop. `Multiple Values`, the shelf sibling, is **not** excluded as a column: it has never been observed as a `<column>` and a warehouse column could legitimately carry that name. Step 5c and the blend hand-assembly procedure carry the rule for hand-authored models. |
+| 1.43.0 | 2026-09-24 | **SCAL-339750 — emitted SQL View names are disambiguated across the workbook (prereq ts-cli v0.147.0).** A relation name is unique only within its datasource, so datasources each holding an unnamed Custom SQL relation emitted several SQL Views called `Custom SQL Query` into one namespace, each model resolving against whichever imported last. GENERATE mode now qualifies **every** owner of a contested name as `Base (Datasource)`, changing the `sql_view:` name **and the filename**; uncontested names are untouched and a physical table is never renamed. A **hand**-assembled model (blend merge, no-`.tds` multi-query) must apply the rule itself — see `tableau-tml-rules.md` "Name uniqueness is workbook-wide". The guarantee is cross-datasource: adding, removing or reordering an unrelated datasource cannot rename a view; it is not absolute order-independence. `--existing-guid` (MERGE) defers to the names the target model already uses and reconciles neither direction (BL-313). |
+| 1.42.1 | 2026-09-23 | **Connection introspection understated how dead it is (audit 13.1).** The step hedged "404 on some connection types"; the 2026-08-26 probe found the hierarchy empty for **every** auth type. Now says to ask the user. |
 
-**Older entries (v1.0.0–v1.39.1):** see [references/changelog-archive.md](references/changelog-archive.md) for the full history — the operative rules/gotchas from those entries are already reflected in the procedure above.
+**Older entries (v1.0.0–v1.42.0):** see [references/changelog-archive.md](references/changelog-archive.md) for the full history — the operative rules/gotchas from those entries are already reflected in the procedure above.

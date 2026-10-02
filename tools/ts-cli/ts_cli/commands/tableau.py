@@ -114,7 +114,7 @@ def parse_cmd(
         build_blend_plan,
         detect_orphan_calcs,
         extract_blends,
-        extract_table_calc_addressing,
+        extract_table_calc_addressing, format_parse_warnings,
         parse_twb,
     )
 
@@ -140,8 +140,8 @@ def parse_cmd(
     typer.echo(
         f"Parsed {len(parsed['datasources'])} datasource(s), "
         f"{len(parsed['blends'])} blend edge-set(s), "
-        f"{len(parsed['dashboards'])} dashboard(s)/{n_viz} viz -> {output_file}",
-        err=True,
+        f"{len(parsed['dashboards'])} dashboard(s)/{n_viz} viz -> {output_file}"
+        + format_parse_warnings(parsed), err=True,
     )
 
 
@@ -397,6 +397,7 @@ def _translate_and_validate(
     instead of it reading as a silently dropped formula.
     """
     from ts_cli.tableau_translate import translate_formulas, validate_pre_import
+    from ts_cli.tableau.build_model import join_warning_entries
 
     translate_result = translate_formulas(
         formulas=resolved_calcs,
@@ -420,10 +421,10 @@ def _translate_and_validate(
     if name_clashes:
         typer.echo(f"  Name clashes (column vs. formula) renamed: {name_clashes}", err=True)
 
-    # Pre-import validation (catches issues before ThoughtSpot rejects them)
+    # Pre-import validation, plus skipped joins prepended (echo below caps at 10).
     col_names = {c["name"] for c in ds["columns"]}
     formula_name_set = {f["name"] for f in translated}
-    validation_issues = validate_pre_import(translated, col_names, formula_name_set)
+    validation_issues = join_warning_entries(ds) + validate_pre_import(translated, col_names, formula_name_set)
     if validation_issues:
         typer.echo(f"  Validation warnings: {len(validation_issues)}", err=True)
         for vi in validation_issues[:10]:
@@ -1042,9 +1043,8 @@ def _generate_flow(
         "name_renames": rename_map,
         "sql_views": len(sql_views),
     }
-    all_validation_warnings = list(validation_issues) + sql_view_param_warnings
-    if all_validation_warnings:
-        result["validation_warnings"] = all_validation_warnings
+    if validation_issues or sql_view_param_warnings:
+        result["validation_warnings"] = list(validation_issues) + sql_view_param_warnings
     if _junk_dropped:
         result["junk_formulas_dropped"] = _junk_dropped
     if result_reconcile_dropped is not None:
@@ -1358,7 +1358,7 @@ def build_model_cmd(
     --column-name-map also applies in MERGE mode (--existing-guid).
     """
     _validate_build_options(existing_guid, profile, connection_name, reconcile_table, reconcile_plan)
-    from ts_cli.model_builder import parse_twb
+    from ts_cli.model_builder import disambiguate_sql_view_names, parse_twb
 
     twb_path = Path(twb_file)
     if not twb_path.exists():
@@ -1391,8 +1391,8 @@ def build_model_cmd(
             err=True,
         )
 
-    # Filter datasources
-    datasources = parsed["datasources"]
+    # Filter datasources. MERGE must match the target model's own SQL View names.
+    datasources = parsed["datasources"] if existing_guid else disambiguate_sql_view_names(parsed["datasources"])
     if datasource_name:
         datasources = [ds for ds in datasources if ds["name"] == datasource_name]
         if not datasources:

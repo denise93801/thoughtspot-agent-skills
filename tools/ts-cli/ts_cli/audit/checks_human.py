@@ -139,29 +139,46 @@ def check_h4(ctx: AuditContext) -> list:
     findings = []
     for model in ctx.models:
         guid = ctx.guid_for(model)
-        deps = ctx.dependents.get(guid, [])
+        # A Set is a column on the Model, so any Answer/Liveboard using it is
+        # already a Model dependent. A SET row alone never makes a Model "used"
+        # (ruling R15) — they stay in `dependents` for H5 only.
+        deps = [d for d in ctx.dependents.get(guid, []) if d.get("type") != "SET"]
         if not deps:
             findings.append(Finding(
                 check_id="H4", angle=_ANGLE, severity="MEDIUM",
                 object_type="model",
                 object_name=model.get("model", {}).get("name", ""),
                 object_guid=guid,
-                detail="Orphan model — zero dependents (no answers, liveboards, or sets)",
+                detail="Orphan model — zero dependents (no answers or liveboards)",
             ))
     return findings
 
 
 def check_h5(ctx: AuditContext) -> list:
     findings = []
+    # R18: the same Set is listed under the Model AND under each underlying Table's
+    # COHORT bucket. Emit once per Set guid, not once per source that lists it.
+    seen = set()
     for deps in ctx.dependents.values():
         for d in deps:
             if d.get("type") == "SET":
                 set_guid = d.get("guid", "")
-                set_deps = ctx.dependents.get(set_guid, [])
-                if not set_deps:
+                if set_guid in seen:
+                    continue
+                seen.add(set_guid)
+                # `build_context` records a SET guid here only when the Set's
+                # consumer lookup was clean (`_add_set_dependents`, BL-324).
+                # Absence means "not looked up", NOT "no consumers" — reporting
+                # an orphan from it asserted a lookup that never happened, and
+                # flagged every set in the environment (BL-302). Stay silent.
+                if set_guid not in ctx.dependents:
+                    continue
+                if not ctx.dependents[set_guid]:
                     findings.append(Finding(
                         check_id="H5", angle=_ANGLE, severity="MEDIUM",
-                        object_type="table", object_name=d.get("name", ""),
+                        # CHECK_META calls H5 "Orphan sets"; the report keyed the
+                        # object as a table, so the row read as the wrong kind.
+                        object_type="set", object_name=d.get("name", ""),
                         object_guid=set_guid,
                         detail=f"Orphan set '{d.get('name', '')}' — zero consuming answers or liveboards",
                     ))
@@ -169,6 +186,17 @@ def check_h5(ctx: AuditContext) -> list:
 
 
 def check_h6(ctx: AuditContext) -> list:
+    """H6 (duplicate sets) — DEFERRED, deliberately not in ``ALL_CHECKS``.
+
+    ``agents/cli/ts-audit/references/check-catalog.md`` lists it under
+    "Deferred / Not assigned": *"Duplicate sets — deferred (requires deep set
+    comparison)"*. The stub keeps the id allocated so it is not reused.
+
+    It carried no docstring and no registry entry, so nothing distinguished a
+    deliberate deferral from a check accidentally dropped from the registry —
+    which is exactly the shape of audit 6.1. `test_every_defined_check_is_registered`
+    now asserts that distinction, with this as the one declared exemption.
+    """
     return []
 
 
@@ -180,12 +208,20 @@ def check_h7(ctx: AuditContext) -> list:
             mt_fqn = mt.get("fqn", "")
             if mt_fqn:
                 model_table_fqns.add(mt_fqn)
+    # Every table guid we know of, whether or not a scoped model joins it.
+    table_guids = set(model_table_fqns) | set(ctx.tables)
     for answer in ctx.answers:
         a = answer.get("answer", {})
         aname = a.get("name", "")
         for tref in (a.get("tables") or []):
             fqn = tref.get("fqn", "")
-            if fqn and fqn not in model_table_fqns:
+            # `answer.tables[].fqn` is the object the answer was built on: a
+            # MODEL guid when healthy, a TABLE guid when it bypasses the model
+            # layer. `model_tables[].fqn` holds TABLE guids, so the old
+            # `not in` flagged every healthy answer and excused the one this
+            # check exists to find (BL-301). An fqn matching neither is an
+            # object we cannot resolve — unknown, not a bypass.
+            if fqn and fqn in table_guids:
                 findings.append(Finding(
                     check_id="H7", angle=_ANGLE, severity="MEDIUM",
                     object_type="answer", object_name=aname,

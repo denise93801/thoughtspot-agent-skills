@@ -493,3 +493,165 @@ def test_cli_verify_requires_exactly_one_of_model_or_dir(tmp_path):
     both = runner.invoke(app, ["tableau", "verify", "--parse", str(parsed_path),
                               "--model", str(model_path), "--dir", str(out)])
     assert both.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# SQL View name disambiguation (SCAL-339750)
+# ---------------------------------------------------------------------------
+
+def _ds_parsed(name, sql_views):
+    """Full `ts tableau parse` shape (``datasources: [...]``), which is what
+    carries the pre-disambiguation SQL View names."""
+    return {
+        "name": name, "tables": [], "sql_views": [{"name": v, "columns": []} for v in sql_views],
+        "columns": [], "joins": [], "calculated_fields": [], "orphan_calcs": [], "calc_map": {},
+        "col_table_map": {},
+    }
+
+
+def test_verify_accepts_a_model_built_from_disambiguated_sql_view_names():
+    """`build-model` renames a SQL View whose name collides across datasources; the
+    parse JSON on disk keeps the old name. Without the same pass here, the rename
+    reads as a dropped Custom-SQL relation and the fidelity gate hard-fails."""
+    parsed = {"datasources": [
+        _ds_parsed("Marketing", ["Custom SQL Query2"]),
+        _ds_parsed("Sales", ["Custom SQL Query2"]),
+    ]}
+    model = _model_tml(model_tables=[{"name": "Custom SQL Query2 (Sales)"}], name="Sales")
+
+    report = verify_conversion(parsed, model)
+
+    structural = next(c for c in report["checks"] if c["name"] == "structural")
+    errors = [f for f in structural["findings"] if f["severity"] == "ERROR"]
+    assert errors == []
+
+
+def test_verify_still_reports_a_genuinely_dropped_sql_view():
+    """The disambiguation pass must not blind the gate: a view absent from the model
+    for any other reason is still an ERROR."""
+    parsed = {"datasources": [_ds_parsed("Sales", ["Custom SQL Query2"])]}
+    model = _model_tml(model_tables=[{"name": "SOMETHING_ELSE"}], name="Sales")
+
+    report = verify_conversion(parsed, model)
+
+    structural = next(c for c in report["checks"] if c["name"] == "structural")
+    messages = [f["message"] for f in structural["findings"] if f["severity"] == "ERROR"]
+    assert any("Custom-SQL relation(s) dropped" in m for m in messages)
+    assert report["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Formulas generation removes on purpose (SCAL-338494)
+#
+# `drop_junk_formulas` removes a formula whose expression references a column
+# that never reaches TML, then cascades to its dependants. Those absences are
+# deliberate, so the structural drop check must not read them as silent drops —
+# while a formula missing for any OTHER reason still has to.
+# ---------------------------------------------------------------------------
+
+def _structural(report):
+    return next(c for c in report["checks"] if c["name"] == "structural")
+
+
+def test_intentionally_dropped_formula_is_not_flagged_as_missing():
+    """A TRANSLATABLE formula referencing the pivot pseudo-field is removed by
+    generation; verify replays that decision rather than reporting a drop."""
+    parsed = _parsed(calcs=[
+        _calc("MNCount", "COUNTD([:Measure Names])"),
+        _calc("Clean", "SUM([SALES])"),
+    ])
+    model = _model_tml(formulas=[{"id": "formula_Clean", "name": "Clean",
+                                 "expr": "sum ( [ORDERS::SALES] )"}],
+                       columns=[_formula_column("Clean", "formula_Clean")])
+
+    report = verify_conversion(parsed, model)
+
+    structural = _structural(report)
+    assert structural["severity"] != "ERROR", structural["findings"]
+    assert not any("MNCount" in f["message"] for f in structural["findings"])
+
+
+def test_cascaded_intentional_drops_are_not_flagged_as_missing():
+    """The dependants go too — MNCount -> Derived -> Downstream. Replaying the
+    drop function (rather than re-testing its predicate) is what covers the chain."""
+    parsed = _parsed(calcs=[
+        _calc("MNCount", "COUNTD([:Measure Names])"),
+        _calc("Derived", "SUM([SALES]) / [MNCount]"),
+        _calc("Downstream", "[Derived] * 2"),
+        _calc("Clean", "SUM([SALES])"),
+    ])
+    model = _model_tml(formulas=[{"id": "formula_Clean", "name": "Clean",
+                                 "expr": "sum ( [ORDERS::SALES] )"}],
+                       columns=[_formula_column("Clean", "formula_Clean")])
+
+    report = verify_conversion(parsed, model)
+
+    structural = _structural(report)
+    assert structural["severity"] != "ERROR", structural["findings"]
+    for name in ("MNCount", "Derived", "Downstream"):
+        assert not any(name in f["message"] for f in structural["findings"]), name
+    assert report["ok"] is True, report
+
+
+def test_intentional_drop_allowance_still_flags_a_genuine_drop():
+    """The allowance must not blanket-suppress: a TRANSLATABLE formula that
+    `drop_junk_formulas` did NOT remove, and is absent anyway, is still an ERROR."""
+    parsed = _parsed(calcs=[
+        _calc("MNCount", "COUNTD([:Measure Names])"),
+        _calc("Genuine", "SUM([SALES]) * 2"),
+    ])
+    model = _model_tml(formulas=[], columns=[])
+
+    report = verify_conversion(parsed, model)
+
+    structural = _structural(report)
+    assert structural["severity"] == "ERROR", structural["findings"]
+    messages = " ".join(f["message"] for f in structural["findings"])
+    assert "Genuine" in messages
+    assert "MNCount" not in messages
+    assert report["ok"] is False
+
+
+def test_internal_id_cross_reference_cascade_is_not_flagged_as_missing():
+    """Tableau writes a cross-reference as the internal calc id, not the caption.
+    Generation resolves those before dropping, so the replay must too — otherwise the
+    dependant's `[Calculation_1]` never matches the dropped caption `MNCount`, the
+    cascade is missed, and verify reports a deliberate removal as a silent drop."""
+    parsed = _parsed(calcs=[
+        {"name": "Calculation_1", "caption": "MNCount", "formula": "COUNTD([:Measure Names])",
+         "role": "measure", "datatype": "real", "internal_name": "Calculation_1"},
+        {"name": "Calculation_2", "caption": "Derived", "formula": "SUM([SALES]) / [Calculation_1]",
+         "role": "measure", "datatype": "real", "internal_name": "Calculation_2"},
+        _calc("Clean", "SUM([SALES])"),
+    ])
+    parsed["calc_map"] = {"Calculation_1": "MNCount", "Calculation_2": "Derived"}
+    model = _model_tml(formulas=[{"id": "formula_Clean", "name": "Clean",
+                                 "expr": "sum ( [ORDERS::SALES] )"}],
+                       columns=[_formula_column("Clean", "formula_Clean")])
+
+    report = verify_conversion(parsed, model)
+
+    structural = _structural(report)
+    assert structural["severity"] != "ERROR", structural["findings"]
+    for name in ("MNCount", "Derived"):
+        assert not any(name in f["message"] for f in structural["findings"]), name
+    assert report["ok"] is True, report
+
+
+def test_generation_replay_does_not_mutate_the_parse():
+    """The replay builds throwaway dicts; `ds["calculated_fields"]` and `calc_map`
+    must come back untouched, or a later check would run on rewritten input."""
+    import copy
+    from ts_cli.tableau.verify import _generation_dropped_formulas
+
+    ds = {
+        "calculated_fields": [
+            {"name": "Calculation_1", "caption": "MNCount", "formula": "COUNTD([:Measure Names])"},
+            {"name": "Calculation_2", "caption": "Derived", "formula": "SUM([SALES]) / [Calculation_1]"},
+        ],
+        "calc_map": {"Calculation_1": "MNCount", "Calculation_2": "Derived"},
+    }
+    before = copy.deepcopy(ds)
+
+    assert _generation_dropped_formulas(ds) == {"MNCount", "Derived"}
+    assert ds == before

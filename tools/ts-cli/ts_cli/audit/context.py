@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ts_cli.commands.tml import parse_edoc, detect_tml_type
+from ts_cli.sets.consumers import fetch_consumers
+from ts_cli.sets.discover import discover_sets
 
 
 @dataclass
@@ -21,6 +24,34 @@ class AuditContext:
     def guid_for(self, tml: dict) -> str:
         return tml.get("guid", "")
 
+    def column_types(self, model: dict) -> dict:
+        """``TABLE::COL`` -> warehouse data type, for every column of every table
+        this model is built on.
+
+        Model columns carry no data type. The schema's own currency anchor records
+        it — "no data_type on formulas[]/columns[]" — so reading
+        ``columns[].db_column_properties.data_type`` off the MODEL yields "" for
+        every column, which is how the VARCHAR join-key checks shipped inert
+        (audit 14.1). The type lives on the Table TML the ``column_id`` resolves
+        to, keyed by the model_tables entry's ``alias`` (or ``name``).
+
+        A table with no TML in ``self.tables`` contributes nothing: its columns'
+        types are unknown, which a caller must not read as "not a string".
+        """
+        out: dict = {}
+        for mt in (model.get("model", {}).get("model_tables") or []):
+            table = self.tables.get(mt.get("fqn", ""))
+            if not table:
+                continue
+            prefix = mt.get("alias") or mt.get("name") or ""
+            for col in (table.get("table", {}).get("columns") or []):
+                name = col.get("name", "")
+                if not name:
+                    continue
+                dt = (col.get("db_column_properties") or {}).get("data_type", "")
+                out[f"{prefix}::{name}"] = dt
+        return out
+
     def tables_for_model(self, model: dict) -> list:
         result = []
         for mt in (model.get("model", {}).get("model_tables") or []):
@@ -28,6 +59,42 @@ class AuditContext:
             if fqn and fqn in self.tables:
                 result.append(self.tables[fqn])
         return result
+
+
+#: TML writes join operands bracketed: `[ORDERS::CUST_ID] = [CUST::ID]`.
+_BRACKETED = re.compile(r"\[([^\]]+)\]")
+
+
+def nl_instructions(ai_data: dict) -> list:
+    """Instruction strings from an ``ai/instructions/get`` response.
+
+    The response is ``{"nl_instructions_info": [{"instructions": [...],
+    "scope": "GLOBAL"}]}`` — there is no top-level ``instructions`` key.
+    ``checks_ai`` read one anyway, so the API half of A3/A5 never fired and a
+    Model coached through the UI reported HIGH "no coaching configured"
+    (BL-292). Its unit fixtures passed a shape the API never returns, which is
+    what kept it invisible.
+    """
+    out: list = []
+    for info in (ai_data or {}).get("nl_instructions_info") or []:
+        out.extend(info.get("instructions") or [])
+    return out
+
+
+def join_key_ids(on_str: str) -> list:
+    """Column ids referenced by a join ``on`` clause.
+
+    Splitting on ``=``/``,`` without stripping the brackets left
+    ``"[ORDERS::CUST_ID]"``, which matches no ``column_id`` anywhere — the first
+    of the two defects that made the VARCHAR join-key checks inert (audit 14.1).
+    An unbracketed clause is tolerated so a hand-built fixture still parses.
+    """
+    text = on_str or ""
+    bracketed = [m.strip() for m in _BRACKETED.findall(text) if m.strip()]
+    if bracketed:
+        return bracketed
+    parts = text.replace("=", ",").replace(" and ", ",").split(",")
+    return [p.strip() for p in parts if p.strip()]
 
 
 def make_context(
@@ -54,6 +121,67 @@ def make_context(
 
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr)
+
+
+def _table_key(parsed: dict) -> str:
+    """The key a Table TML is stored under in ``AuditContext.tables``.
+
+    Its GUID, because that is what ``model_tables[].fqn`` holds. This map used
+    to be keyed by the warehouse path ``db.schema.db_table``, so every
+    ``tables.get(mt["fqn"])`` compared a guid against a path and missed —
+    ``column_types`` returned ``{}`` on every real run, and P6/D2 could not
+    report a VARCHAR join key whatever their logic did. Falls back to the
+    warehouse path for a doc that carries no guid.
+    """
+    t = parsed.get("table", {})
+    warehouse_path = "{}.{}.{}".format(
+        t.get("db") or "", t.get("schema") or "", t.get("db_table") or "")
+    return parsed.get("guid") or warehouse_path
+
+
+def _model_refs(models: list, model_guids: list) -> list:
+    """``{"guid", "name"}`` per Model in scope, named from its exported TML where we have it."""
+    names = {m["guid"]: (m.get("model") or {}).get("name") for m in models if m.get("guid")}
+    guids = dict.fromkeys(list(model_guids) + [m.get("guid") for m in models])
+    return [{"guid": g, "name": names.get(g) or g} for g in guids if g]
+
+
+def _add_set_dependents(client: Any, model_refs: list, dependents: dict,
+                        warnings: list) -> None:
+    """Record each discovered Set under its Model, and its consumers under its own GUID.
+
+    Sets are not in a Model's dependents (BL-324), so H5 had nothing to read.
+    ``dependents[set_guid]`` is written ONLY when the consumer lookup is clean
+    (no ``error``, no ``other_types``). Absence means "not looked up", which
+    ``check_h5`` treats as silence, never as an orphan (BL-302). A Set whose
+    dependents are hidden from this user, or whose only dependent is another Set,
+    must not read as unused (ruling R14). A Model whose Set listing is incomplete
+    contributes no Set rows at all — only a warning.
+    """
+    if not model_refs:
+        return
+    _log("Discovering Sets...")
+    found = discover_sets(client, model_refs)
+    for model_guid, sets in found["sets"].items():
+        rows = dependents.setdefault(model_guid, [])
+        known = {d.get("guid") for d in rows if d.get("type") == "SET"}
+        for s in sets:
+            if s["guid"] not in known:
+                rows.append({"source_guid": model_guid, "guid": s["guid"], "name": s["name"],
+                             "type": "SET", "raw_bucket": "COHORT"})
+            cons = fetch_consumers(client, s)
+            if cons.get("error") or cons.get("other_types"):
+                why = cons.get("error") or "has dependents of a type H5 does not read: " + \
+                    ", ".join(sorted({o.get("type", "?") for o in cons["other_types"]}))
+                msg = f"Set {s['name']} ({s['guid']}): orphan check skipped — {why}"
+                _log(f"Warning: {msg}")
+                warnings.append(msg)
+                continue
+            dependents[s["guid"]] = [dict(d, source_guid=s["guid"]) for d in cons["dependents"]]
+    for note in found["notes"]:
+        msg = f"Set discovery {note['kind']} for {note['object']}: {note['detail']}"
+        _log(f"Warning: {msg}")
+        warnings.append(msg)
 
 
 def build_context(
@@ -94,10 +222,15 @@ def build_context(
             if tml_type == "model":
                 models.append(parsed)
             elif tml_type == "table":
-                fqn = (parsed.get("table", {}).get("db") or "") + "." + \
-                      (parsed.get("table", {}).get("schema") or "") + "." + \
-                      (parsed.get("table", {}).get("db_table") or "")
-                tables[fqn] = parsed
+                # Key by GUID, because that is what `model_tables[].fqn` holds.
+                # This map was keyed by the warehouse path "db.schema.db_table",
+                # so every `tables.get(mt["fqn"])` lookup compared a guid against
+                # a path and missed — `column_types` returned {} on every real
+                # run, and with it P6/D2 could never report a VARCHAR join key.
+                # `erd.py` carries a name-matching fallback written to work
+                # around exactly this rather than fix it. Falls back to the
+                # warehouse path when a doc carries no guid.
+                tables[_table_key(parsed)] = parsed
 
     model_guids_from_tml = [m.get("guid") for m in models if m.get("guid")]
     table_guids_from_tml = [t.get("guid") for t in tables.values() if t.get("guid")]
@@ -176,6 +309,9 @@ def build_context(
                     parsed = parse_edoc(edoc, "YAML")
                     if parsed and detect_tml_type(parsed) == "answer":
                         answers.append(parsed)
+        # After the answer export, so Set consumers do not widen the answer set.
+        # The SET rows are for H5; check_h4 ignores them (ruling R15).
+        _add_set_dependents(client, _model_refs(models, model_guids), dependents, warnings)
 
     _log(f"Context ready: {len(models)} model(s), {len(tables)} table(s), "
          f"{len(answers)} answer(s)")

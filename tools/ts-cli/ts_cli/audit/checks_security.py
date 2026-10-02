@@ -4,6 +4,7 @@ import re
 
 from ts_cli.audit.context import AuditContext
 from ts_cli.audit.findings import Finding
+from ts_cli.audit import rules
 
 _ANGLE = "security"
 
@@ -22,8 +23,8 @@ _CREDENTIAL_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-_FUNC_IN_EXPR = re.compile(r"\b(UPPER|LOWER|TRIM|CAST|CONCAT|CONTAINS|IF)\s*\(", re.IGNORECASE)
-_BRACKET_REF = re.compile(r"\[([^\]]+)\]")
+_FUNC_IN_EXPR = rules.FUNC_IN_EXPR  # one pattern, two angles (BL-304)
+_BRACKET_REF = rules.BRACKET_REF
 
 
 def _find_pii_columns(columns):
@@ -57,14 +58,21 @@ def check_s2(ctx: AuditContext) -> list:
     for model in ctx.models:
         m = model.get("model", {})
         pii = _find_pii_columns(m.get("columns") or [])
+        # Keyed by the prefix a `column_id` actually carries — the model_tables
+        # alias when one is set, not the Table TML's display name. Keying on the
+        # display name meant a role-playing dimension never matched, so S2
+        # reported "WITHOUT table RLS" about a table that has RLS (BL-305).
         table_has_rls = {}
-        for fqn, table in ctx.tables.items():
-            t = table.get("table", {})
-            rls = t.get("rls_rules") or {}
-            table_has_rls[t.get("name", "")] = bool(rls.get("rules"))
+        for mt in (m.get("model_tables") or []):
+            table = ctx.tables.get(mt.get("fqn", ""))
+            if not table:
+                continue
+            rls = table.get("table", {}).get("rls_rules") or {}
+            table_has_rls[rules.table_key(mt)] = bool(rls.get("rules"))
         for col, category, _ in pii:
-            idx = (col.get("properties") or {}).get("index_type", "")
-            if not idx:
+            # `index_type` absent means indexed by DEFAULT, which is the risk
+            # this check exists to report — testing presence skipped it (BL-299).
+            if not rules.is_indexed(col):
                 continue
             cid = col.get("column_id", "")
             table_name = cid.split("::")[0] if "::" in cid else ""
@@ -140,24 +148,15 @@ def check_s5(ctx: AuditContext) -> list:
 def check_s8(ctx: AuditContext) -> list:
     findings = []
     for fqn, table in ctx.tables.items():
-        t = table.get("table", {})
-        rls = t.get("rls_rules") or {}
-        cols = t.get("columns") or []
-        col_types = {c.get("name", ""): (c.get("db_column_properties") or {}).get("data_type", "")
-                     for c in cols}
-        for rule in (rls.get("rules") or []):
-            expr = rule.get("expr", "")
-            refs = _BRACKET_REF.findall(expr)
-            for ref in refs:
-                col_name = ref.split("::")[-1] if "::" in ref else ref
-                dt = col_types.get(col_name, "")
-                if dt.upper() in ("VARCHAR", "CHAR", "STRING", "TEXT"):
-                    findings.append(Finding(
-                        check_id="S8", angle=_ANGLE, severity="MEDIUM",
-                        object_type="column", object_name=col_name,
-                        object_guid=table.get("guid", ""),
-                        detail=f"VARCHAR RLS column '{col_name}'",
-                    ))
+        # Shared walk with P15, which adds a `value_casing` guard (BL-304).
+        for rule, col_name, dt, _vc in rules.rls_column_refs(table):
+            if rules.is_string_type(dt):
+                findings.append(Finding(
+                    check_id="S8", angle=_ANGLE, severity="MEDIUM",
+                    object_type="column", object_name=col_name,
+                    object_guid=table.get("guid", ""),
+                    detail=f"VARCHAR RLS column '{col_name}'",
+                ))
     return findings
 
 

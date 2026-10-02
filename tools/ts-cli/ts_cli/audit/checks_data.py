@@ -4,44 +4,23 @@ import re
 from collections import defaultdict
 from itertools import combinations
 
-from ts_cli.audit.context import AuditContext
+from ts_cli.audit.context import AuditContext, join_key_ids
 from ts_cli.audit.findings import Finding
+from ts_cli.audit import rules
 
 _ANGLE = "data_modeling"
 _SQL_PASSTHROUGH = re.compile(r"sql_(int|string|bool)_aggregate_op", re.IGNORECASE)
 
 
 def _join_depth(model_tables):
-    graph = {}
-    for t in model_tables:
-        tn = t.get("name", "")
-        for j in (t.get("joins") or []):
-            graph.setdefault(tn, []).append(j.get("with", ""))
-    if not graph:
-        return 0
-    max_d = 0
-    for start in graph:
-        visited = set()
-        stack = [(start, 0)]
-        while stack:
-            node, depth = stack.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            max_d = max(max_d, depth)
-            for nb in graph.get(node, []):
-                stack.append((nb, depth + 1))
-    return max_d
+    """Thin alias — the rule lives in `rules.join_depth` (BL-304)."""
+    return rules.join_depth(model_tables)
 
 
 def _table_role(columns, table_name):
-    table_cols = [c for c in columns
-                  if (c.get("column_id") or "").split("::")[0] == table_name]
-    if not table_cols:
-        return "unknown"
-    measures = sum(1 for c in table_cols
-                   if (c.get("properties") or {}).get("column_type") == "MEASURE")
-    return "fact" if measures > 3 else "dimension"
+    """Thin alias — the rule lives in `rules.table_role` (BL-304)."""
+    return rules.table_role(columns, table_name)
+
 
 
 def check_d1(ctx: AuditContext) -> list:
@@ -57,9 +36,9 @@ def check_d1(ctx: AuditContext) -> list:
         max_depth = _join_depth(mt)
         for label, val, green, yellow in [
             ("tables", len(mt), 10, 15),
-            ("columns", len(cols), 50, 75),
+            ("columns", len(cols), 50, rules.MAX_MODEL_COLUMNS),
             ("joins", joins_count, 8, 12),
-            ("join depth", max_depth, 3, 5),
+            ("join depth", max_depth, rules.JOIN_DEPTH_GREEN, rules.JOIN_DEPTH_YELLOW),
             ("formulas", len(formulas), 30, 50),
         ]:
             if val <= green:
@@ -79,32 +58,36 @@ def check_d2(ctx: AuditContext) -> list:
     for model in ctx.models:
         m = model.get("model", {})
         guid = ctx.guid_for(model)
-        col_types = {}
-        for c in (m.get("columns") or []):
-            cid = c.get("column_id", "")
-            dt = (c.get("db_column_properties") or {}).get("data_type", "")
-            col_types[cid] = dt
-        for mt in (m.get("model_tables") or []):
-            for j in (mt.get("joins") or []):
-                on_str = j.get("on", "")
-                parts = [p.strip() for p in on_str.replace("=", ",").split(",") if p.strip()]
-                varchar_keys = [p for p in parts if col_types.get(p, "").upper() in ("VARCHAR", "CHAR", "STRING", "TEXT")]
-                if varchar_keys:
-                    findings.append(Finding(
-                        check_id="D2", angle=_ANGLE, severity="HIGH",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=guid,
-                        detail=f"VARCHAR join key(s): {', '.join(varchar_keys)}",
-                        metric=len(varchar_keys),
-                    ))
-                if len(parts) > 2:
-                    findings.append(Finding(
-                        check_id="D2", angle=_ANGLE, severity="MEDIUM",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=guid,
-                        detail=f"Multi-column join ({len(parts)//2} keys)",
-                        metric=len(parts) // 2,
-                    ))
+        # Types come from the TABLE TMLs, not the model — see AuditContext.column_types.
+        col_types = ctx.column_types(model)
+        # Resolves referencing joins too — their condition lives in the source
+        # Table TML, and reading only `joins[].on` missed 6 of 6 real joins
+        # in a live model (BL-306).
+        for j in rules.model_joins(m, ctx.tables):
+            mt = j["model_table"]
+            keys = join_key_ids(j["on"])
+            varchar_keys = [k for k in keys
+                            if col_types.get(k, "").upper() in ("VARCHAR", "CHAR", "STRING", "TEXT")]
+            if varchar_keys:
+                findings.append(Finding(
+                    check_id="D2", angle=_ANGLE, severity="HIGH",
+                    object_type="join", object_name=j["name"],
+                    object_guid=guid,
+                    detail=f"VARCHAR join key(s): {', '.join(varchar_keys)}",
+                    metric=len(varchar_keys),
+                ))
+            # A composite key is one operand pair per key. The previous split
+            # on `=`/`,` did not separate `and`, so a two-key join yielded
+            # three parts and reported `3 // 2 = 1` key — undercounting the
+            # very thing the check exists to surface.
+            if len(keys) > 2:
+                findings.append(Finding(
+                    check_id="D2", angle=_ANGLE, severity="MEDIUM",
+                    object_type="join", object_name=j["name"],
+                    object_guid=guid,
+                    detail=f"Multi-column join ({len(keys)//2} keys)",
+                    metric=len(keys) // 2,
+                ))
     return findings
 
 
@@ -113,23 +96,26 @@ def check_d3(ctx: AuditContext) -> list:
     for model in ctx.models:
         m = model.get("model", {})
         guid = ctx.guid_for(model)
-        for mt in (m.get("model_tables") or []):
-            for j in (mt.get("joins") or []):
-                jtype = (j.get("type") or "").upper()
-                if jtype == "OUTER":
-                    findings.append(Finding(
-                        check_id="D3", angle=_ANGLE, severity="HIGH",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=guid,
-                        detail="FULL OUTER join causes performance issues",
-                    ))
-                elif jtype in ("LEFT_OUTER", "RIGHT_OUTER"):
-                    findings.append(Finding(
-                        check_id="D3", angle=_ANGLE, severity="INFO",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=guid,
-                        detail=f"{jtype} join — may indicate data discrepancies",
-                    ))
+        # Resolves referencing joins too — their condition lives in the source
+        # Table TML, and reading only `joins[].on` missed 6 of 6 real joins
+        # in a live model (BL-306).
+        for j in rules.model_joins(m, ctx.tables):
+            mt = j["model_table"]
+            jtype = (j["type"] or "").upper()
+            if jtype == "OUTER":
+                findings.append(Finding(
+                    check_id="D3", angle=_ANGLE, severity="HIGH",
+                    object_type="join", object_name=j["name"],
+                    object_guid=guid,
+                    detail="FULL OUTER join causes performance issues",
+                ))
+            elif jtype in ("LEFT_OUTER", "RIGHT_OUTER"):
+                findings.append(Finding(
+                    check_id="D3", angle=_ANGLE, severity="INFO",
+                    object_type="join", object_name=j["name"],
+                    object_guid=guid,
+                    detail=f"{jtype} join — may indicate data discrepancies",
+                ))
     return findings
 
 
@@ -138,8 +124,7 @@ def check_d4(ctx: AuditContext) -> list:
     for model in ctx.models:
         m = model.get("model", {})
         mt = m.get("model_tables") or []
-        props = m.get("properties") or {}
-        if len(mt) > 5 and not props.get("join_progressive", False):
+        if rules.is_wide_and_not_progressive(m):
             findings.append(Finding(
                 check_id="D4", angle=_ANGLE, severity="HIGH",
                 object_type="model", object_name=m.get("name", ""),
@@ -160,10 +145,10 @@ def check_d5(ctx: AuditContext) -> list:
         joined = set()
         for t in mt:
             for j in (t.get("joins") or []):
-                joined.add(t.get("name", ""))
+                joined.add(rules.table_key(t))
                 joined.add(j.get("with", ""))
         for t in mt:
-            tname = t.get("name", "")
+            tname = rules.table_key(t)
             if tname not in joined:
                 findings.append(Finding(
                     check_id="D5", angle=_ANGLE, severity="HIGH",
@@ -180,7 +165,7 @@ def check_d6(ctx: AuditContext) -> list:
         m = model.get("model", {})
         cols = m.get("columns") or []
         for mt in (m.get("model_tables") or []):
-            tname = mt.get("name", "")
+            tname = rules.table_key(mt)
             table_cols = [c for c in cols
                           if (c.get("column_id") or "").split("::")[0] == tname]
             if not table_cols:
@@ -294,7 +279,7 @@ def check_d10(ctx: AuditContext) -> list:
         joined = set()
         for t in mt:
             for j in (t.get("joins") or []):
-                joined.add(t.get("name", ""))
+                joined.add(rules.table_key(t))
                 joined.add(j.get("with", ""))
         for t in mt:
             tname = t.get("name", "")
@@ -315,29 +300,32 @@ def check_d11(ctx: AuditContext) -> list:
     for model in ctx.models:
         m = model.get("model", {})
         cols = m.get("columns") or []
-        for mt in (m.get("model_tables") or []):
-            for j in (mt.get("joins") or []):
-                cardinality = (j.get("cardinality") or "").upper()
-                if "ONE_TO_MANY" not in cardinality and "MANY_TO_MANY" not in cardinality:
-                    continue
-                tname = j.get("with", "")
-                from_table = mt.get("name", "")
-                from_role = _table_role(cols, from_table)
-                to_role = _table_role(cols, tname)
-                if from_role == "fact" and to_role == "fact":
-                    findings.append(Finding(
-                        check_id="D11", angle=_ANGLE, severity="MEDIUM",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=ctx.guid_for(model),
-                        detail=f"Fan-out risk: fact-to-fact join '{from_table}' -> '{tname}' with {cardinality}",
-                    ))
-                else:
-                    findings.append(Finding(
-                        check_id="D11", angle=_ANGLE, severity="INFO",
-                        object_type="join", object_name=j.get("name", ""),
-                        object_guid=ctx.guid_for(model),
-                        detail=f"ONE_TO_MANY join '{from_table}' -> '{tname}'",
-                    ))
+        # Resolves referencing joins too — their condition lives in the source
+        # Table TML, and reading only `joins[].on` missed 6 of 6 real joins
+        # in a live model (BL-306).
+        for j in rules.model_joins(m, ctx.tables):
+            mt = j["model_table"]
+            cardinality = (j["cardinality"] or "").upper()
+            if "ONE_TO_MANY" not in cardinality and "MANY_TO_MANY" not in cardinality:
+                continue
+            tname = j.get("with", "")
+            from_table = mt.get("name", "")
+            from_role = _table_role(cols, from_table)
+            to_role = _table_role(cols, tname)
+            if from_role == "fact" and to_role == "fact":
+                findings.append(Finding(
+                    check_id="D11", angle=_ANGLE, severity="MEDIUM",
+                    object_type="join", object_name=j["name"],
+                    object_guid=ctx.guid_for(model),
+                    detail=f"Fan-out risk: fact-to-fact join '{from_table}' -> '{tname}' with {cardinality}",
+                ))
+            else:
+                findings.append(Finding(
+                    check_id="D11", angle=_ANGLE, severity="INFO",
+                    object_type="join", object_name=j["name"],
+                    object_guid=ctx.guid_for(model),
+                    detail=f"ONE_TO_MANY join '{from_table}' -> '{tname}'",
+                ))
     return findings
 
 

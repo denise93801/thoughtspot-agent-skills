@@ -375,6 +375,65 @@ sql_view:
       aggregation: SUM
 ```
 
+### Tableau's pivot pseudo-field is not a column
+
+`:Measure Names` arrives as an ordinary `<column>` element but names no warehouse
+column, so a `column_id` built from it resolves to nothing. Exclude it — and drop any
+formula whose expression references it, then anything depending on those in turn,
+since a surviving dependant emits a reference to a column the model does not contain.
+
+Neither omission is caught by a gate: on a single-table model the id comes out
+table-qualified and the same phantom is written into that table's TML, so the
+cross-reference check resolves it; on a multi-table model the id is bare and I12, the
+rule that flags a bare `column_id`, is scoped to single-table models.
+
+`Multiple Values`, the other half of Tableau's Measure Values pivot, is **not** excluded
+as a column. It is a shelf token — its presence on a worksheet's shelf means the real
+measures are that worksheet's column-instances — and a warehouse column could
+legitimately carry that name.
+
+`ts tableau build-model` applies all of this automatically. **Hand assembly does not** —
+the parse's `columns[]` and `calculated_fields[]` carry them, so apply it yourself.
+
+### Name uniqueness is workbook-wide, not per datasource
+
+Tableau names an unnamed Custom SQL relation `Custom SQL Query` and numbers later ones
+*within the same datasource* (`Custom SQL Query1`, …), so the name is unique per
+datasource and nothing more. Every datasource of a workbook is emitted into ONE
+ThoughtSpot namespace, where `model_tables[].name` resolves against a single
+Table/SQL-View namespace — so two datasources each declaring `Custom SQL Query` produce
+two objects with one name, and each model points at whichever imported last.
+
+A name is **contested** when more than one datasource declares it, or when a physical
+table anywhere in the workbook carries it. Resolve a contested name by qualifying
+**every** owner as `Base (Datasource)` — falling back to `Base (Datasource N)` if that
+exact string is taken — never by letting the first owner keep the bare name. Leave an
+uncontested name exactly as written.
+
+- **Physical table names are never renamed.** They must match the warehouse object, so a
+  SQL View colliding with one is the side that gets qualified.
+- **Compare case-insensitively** when deciding whether a name is contested, because
+  ThoughtSpot is case-insensitive on object names.
+- **Every reference follows the new name**: `model_tables[].name`, `columns[].column_id`
+  prefixes, join `with`/`on` endpoints, and the `[View::Column]` refs inside translated
+  formulas. The SQL body and `sql_output_column` are warehouse-side and are never
+  rewritten.
+- **A datasource caption may contain a colon**, so a qualified name can too
+  (`Custom SQL Query2 (Sales: EU)`). The first `::` in a reference separates the view
+  from the column, so such a name is still a single view half.
+
+Qualifying every owner is what keeps the result stable **across datasources**: adding,
+removing or reordering an unrelated datasource cannot rename a view. That is the
+guarantee, and it is not absolute order-independence — two views in one datasource whose
+names differ only in case share a qualifier, so which takes the ordinal follows their
+declaration order. Either outcome is internally consistent.
+
+`ts tableau build-model` applies all of this automatically in GENERATE mode. **Hand
+assembly does not** — when you build `model_tables[]` yourself from `ts tableau parse`
+output (the blend-merge and no-`.tds` multi-query procedures), the parse carries the
+original names, so apply the rule yourself or two member datasources can contribute the
+same name to one merged model.
+
 ### Key differences from table TML
 
 - **No `db`, `schema`, or `db_table`** — the SQL query defines the data source

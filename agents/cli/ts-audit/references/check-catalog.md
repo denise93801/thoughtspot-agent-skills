@@ -106,8 +106,8 @@ check ID appearing in reports).
 | H1 | Column name quality (anti-pattern regexes) | LOW per bad name |
 | H2 | Description quality (too-short, boilerplate) | LOW per violation |
 | H3 | Unnecessary hidden columns (not referenced by formulas) | MEDIUM per column |
-| H4 | Orphan models (zero dependents) | MEDIUM per model |
-| H5 | Orphan sets (zero consumers) | MEDIUM per set |
+| H4 | Orphan models (zero dependents other than Sets — a Set's consumers are already Model dependents) | MEDIUM per model |
+| H5 | Orphan sets (zero consumers). Sets discovered via `ts_cli.sets.discover` (not Model dependents — BL-324); a Set whose consumer lookup fails, hides dependents, or is consumed only by another Set is not reported (warning instead) | MEDIUM per set |
 | H7 | Direct table connections (bypasses semantic layer) | MEDIUM per answer |
 | H8 | Formula promotion candidates (duplicated in 2+ answers) | HIGH — link to /ts-object-answer-promote |
 | H9 | Redundant answer formulas (duplicating model formula) | LOW per formula |
@@ -147,8 +147,8 @@ check ID appearing in reports).
 | S3 | PII without CLS or masking formula | MEDIUM per column |
 | S4 | RLS bypass + PII columns in model | HIGH per model |
 | S5 | Credentials in analytics | CRITICAL per column |
-| S8 | Overly permissive sharing (FULL access to all users group) | MEDIUM per object |
-| S9 | Sharing to external groups | INFO per object |
+| S8 | VARCHAR column used in an RLS rule | MEDIUM per column |
+| S9 | Function call in an RLS rule expression | HIGH per rule |
 | S10 | RLS bypass enabled (disables row-level security) | MEDIUM per model |
 
 ---

@@ -1979,7 +1979,7 @@ ts tableau parse "workbook.twbx" --output parsed.json
 
 | Flag | Required | Description |
 |---|---|---|
-| `twb_file` (arg) | yes | Path to `.twb` or `.twbx` file |
+| `twb_file` (arg) | yes | Path to a `.twb`/`.twbx` workbook, or a `.tds`/`.tdsx` published datasource |
 | `--output`, `-o` | yes | Output path for the parsed JSON |
 
 **Output file:**
@@ -2002,7 +2002,12 @@ ts tableau parse "workbook.twbx" --output parsed.json
     "joins": [{"with": "...", "table": "...", "on": "...", "type": "LEFT_OUTER",
                "cardinality": "MANY_TO_ONE"}]
   },
-  "table_calc_addressing": {"column_level": {...}, "ws_overrides": {...}}
+  "table_calc_addressing": {"column_level": {...}, "ws_overrides": {...},
+                            "warnings": ["..."]},
+  "dashboards": [{"name": "...", "visuals": [{"title": "...", "mark": "...",
+                  "fields": [...], "bucket_tokens": {...}, "tile": {...}}]}],
+  "sets_detected": 0,
+  "skipped_datasources": [{"reason": "...", "detail": "..."}]
 }
 ```
 
@@ -2011,7 +2016,21 @@ their own datasource, direct + transitive), `blends` (the data-blend graph keyed
 datasource caption), and `table_calc_addressing` (column-level + worksheet-override
 `<table-calc>` sort context) are computed by the pure extractors in
 `ts_cli/tableau/twb.py` (`detect_orphan_calcs`, `extract_blends`,
-`extract_table_calc_addressing`). `blend_plan` is derived from `blends` +
+`extract_table_calc_addressing`). `table_calc_addressing.warnings` lists
+non-fatal degradations — today, `<address><value>` tokens that are not numeric
+(Tableau writes e.g. `false` or `"All Pages"` for non-offset addressing modes):
+that entry's `address_offset` degrades to `null` (the raw token is kept in
+`address_value`, so a non-offset mode stays distinguishable from an absent
+`<address>` element) and the warning is echoed to
+stderr, rather than aborting the parse of the whole workbook (SCAL-338450).
+`dashboards` carries one entry per `<dashboard>` with its visuals (title, mark class,
+fields, bucket tokens, grid tile). `sets_detected` counts native Tableau Sets so the
+caller can nudge rather than skip them silently (BL-131). `skipped_datasources` lists
+datasources that were found but not migrated, each with a `reason` and a `detail`
+naming which one — a datasource with no usable name, or one with nothing migratable
+inside; the duplicate-name skip is deliberately absent, since Tableau writes one
+`<datasource>` stub per worksheet and reporting correct dedupe would bury the rest
+(SCAL-331323). `blend_plan` is derived from `blends` +
 `datasources` by `build_blend_plan` (`ts_cli/tableau/build_model.py`) — connected
 components, a datasource→table map, and the flattened join list for every blend
 edge, ready for SKILL.md Step 5b to consume directly instead of re-deriving them by
@@ -2179,7 +2198,7 @@ ts tableau build-model "workbook.twbx" \
 
 | Flag | Required | Description |
 |---|---|---|
-| `twb_file` (arg) | yes | Path to `.twb` or `.twbx` file |
+| `twb_file` (arg) | yes | Path to a `.twb`/`.twbx` workbook, or a `.tds`/`.tdsx` published datasource |
 | `--connection`, `-c` | yes | ThoughtSpot connection name |
 | `--output-dir`, `-o` | no | Output directory (default: `.`) |
 | `--model-name`, `-m` | no | Model name (default: derived from datasource name) |
@@ -2203,7 +2222,7 @@ against a real target schema.
 3. Resolve all internal references (`[Calculation_NNN]` and copy-style `[Field (copy)_NNN]`)
 4. Translate formulas to ThoughtSpot syntax (via `tableau_translate.py`, an orchestrator facade over the `ts_cli/tableau/` package — entry point unchanged)
 5. Resolve name collisions (formula/param clashes → rename; column/formula clashes → drop column)
-6. Build model TML with `formula_` prefix for cross-references and double-aggregation fix; **emit a `.sql_view.tml` per Custom SQL relation and reference it by name in `model_tables[]`** (physical/SQL-View column dedup applied)
+6. Build model TML with `formula_` prefix for cross-references and double-aggregation fix; **emit a `.sql_view.tml` per Custom SQL relation and reference it by name in `model_tables[]`** (physical/SQL-View column dedup applied; colliding SQL View names disambiguated first — see "SQL View emission" below)
 7. Split into phased import files — **SQL Views first** (they must exist before the model), then phase 0 = base, then per dependency level
 8. **GENERATE mode only** — emit one `.table.tml` per physical table (see "Table TML emission" below)
 
@@ -2263,6 +2282,49 @@ TML: `model.tables[].name` and `.fqn`, `model_tables[].name` and join `with`/`on
 endpoints, `columns[].column_id` table prefixes, and any `[TABLE::COL]` refs formula
 translation embeds via column scoping. Tables absent from the map pass through
 unchanged. Implemented by `apply_table_name_map()` in `ts_cli/tableau/build_model.py`.
+
+**SQL View emission and name disambiguation:** each Custom SQL relation
+(`<relation type='text'>`) becomes one `.sql_view.tml`, which the model references by
+name in `model_tables[]`. Tableau names an unnamed Custom SQL relation
+`Custom SQL Query` and numbers later ones *within the same datasource*
+(`Custom SQL Query1`, …) — so that name is unique per datasource and nothing more.
+A workbook whose datasources each contain one therefore yields several SQL Views all
+called `Custom SQL Query`, and since `build-model` writes every datasource into one
+output directory — and ThoughtSpot resolves `model_tables[].name` against a single
+Table/SQL-View namespace — each model would point at an ambiguous object.
+
+`build-model` resolves this before generating anything. A SQL View name is *contested*
+when more than one datasource declares it, or when a physical table anywhere in the
+workbook carries it; a contested name is rewritten as `Base (Datasource)`, falling back
+to `Base (Datasource N)` only if that exact string is already taken. Uncontested names
+are left exactly as written, so a workbook with no collision is unaffected.
+
+- **Every owner of a contested name is qualified**, not just the second and later ones,
+  so adding, removing or reordering an unrelated datasource cannot rename a view. (A
+  name that goes from uncontested to contested does change, since uncontested names are
+  deliberately left alone.) The guarantee is cross-datasource: two views in *one*
+  datasource whose names differ only in case share a qualifier, and which receives the
+  ordinal follows their declaration order — deterministic per workbook, and consistent
+  either way, but not fixed across a re-save that reorders them.
+- **Physical table names are never renamed** — they must match the warehouse object. A
+  SQL View colliding with one is the side that gets qualified.
+- **Comparison is case-insensitive**, because ThoughtSpot is case-insensitive on object
+  names.
+- **Every reference follows the new name**: `model_tables[].name`, `columns[].column_id`
+  prefixes, join `with`/`on` endpoints, and the `[View::Column]` refs formula translation
+  embeds. The SQL body and `sql_output_column` are never rewritten.
+- **GENERATE mode only.** `--existing-guid` (MERGE) adds formulas to a model that already
+  exists, so the names that model already uses are authoritative and no renaming is
+  applied. Nothing reconciles the two: merging into a model a *previous* GENERATE run
+  qualified will emit the bare name where the target holds the qualified one. Tracked as
+  BL-313.
+
+Names are chosen from the full datasource list before any `--datasource` filter, so a
+filtered run emits the same name as an unfiltered one. Implemented by
+`disambiguate_sql_view_names()` in `ts_cli/tableau/naming.py`. A physical table and
+a SQL View sharing one relation name *inside a single datasource* cannot be fully
+separated from the parsed representation — Tableau does not produce that shape; see
+BL-284.
 
 **Table TML emission (GENERATE mode only):** alongside the phased model TML,
 `build-model` also writes a `.table.tml` per physical table, so the output directory
@@ -3306,6 +3368,7 @@ ts databricks translate-formulas \
 | `--input` / `-i` | yes | `parsed.json` produced by `ts databricks parse-mv` |
 | `--output` / `-o` | yes | Output path for the translated formulas JSON |
 | `--tables` / `-t` | yes | JSON object mapping MV alias paths to ThoughtSpot table names — a `"source"` key is required (the MV's base table alias); nested join aliases (e.g. `"orders.customers"`) map to their joined ThoughtSpot table. Or the literal `auto` to derive the whole map from `--input` (BL-205) |
+| `--allow-row-lag` | no | Emit period-comparison windows (`range: current` + `offset:`) as the `moving_sum` row-lag **approximation** instead of skipping them (BL-322). Off by default: the approximation is correct only when the query is grouped by exactly the window's order dimension with every period present — at any other grain it returns NULL or a plausible wrong number with no warning. Each emitted measure carries a `row_lag_approximation` annotation |
 
 **Output:** `{"translated": [...], "skipped": [...], "filter": {...}|null,
 "dependency_dag": {...}, "window_measures": [...], "stats": {"total":
@@ -4390,14 +4453,20 @@ ts migrate scan-sets --models-file candidates.csv --source-profile prod
 
 Verified live 2026-07-26. Three facts:
 
-1. A Set creates a `LOGICAL_COLUMN` of subtype `COHORT_*` **owned by the Model**.
+1. A Set creates a `LOGICAL_COLUMN` **owned by the Model**. Its header `type` is often
+   blank (2 of 3 live Sets; only some read `COHORT_*`), so membership is decided by the
+   presence of `cohortConfig` in the Model's cohort listing, never by type (BL-325).
 2. It **does not appear in the Model's TML at all**.
 3. It **blocks publishing** the Model and every Answer and Liveboard on it, used or not.
 
 Fact 2 is the dangerous one, and it dictates the implementation: because the column is
 invisible in TML, a lift-and-shift would **silently drop** Sets rather than fail. So the
-scan queries `metadata/search` for `COHORT_*` subtypes — a TML inspection reports a clean
-Model that is in fact blocked.
+scan reads each Model's cohort listing through the shared Set discovery
+(`ts_cli/sets/discover.py`) — a TML inspection reports a clean Model that is in fact
+blocked. Membership is the presence of `cohortConfig`, never the header `type`, which was
+blank on 2 of 3 live Sets (BL-325). A Model whose listing fails is reported **blocked**,
+with the cohort column `(discovery incomplete)`, never clean; `apply`'s self-scan refuses it
+the same way.
 
 ### Output
 
@@ -4411,11 +4480,23 @@ without waiting for the platform.
 
 ```json
 {"scanned": {"orgs": 12, "models": 340},
- "summary": {"orgs_blocked": 3, "models_blocked": 4, "objects_affected": 17},
+ "summary": {"orgs_blocked": 3, "models_blocked": 4, "objects_affected": 17,
+             "models_incomplete": 1},
  "blocked": [{"org": "Tenant1", "model": "Sales", "model_guid": "...",
               "cohort_columns": [{"name": "RSET_QTY_BINS", "guid": "..."}],
-              "dependents": [{"type": "ANSWER", "name": "Q4 cohort view", "guid": "..."}]}]}
+              "dependents": [{"type": "ANSWER", "name": "Q4 cohort view", "guid": "..."}]},
+             {"org": "Tenant2", "model": "Ops", "model_guid": "...",
+              "cohort_columns": [{"name": "(discovery incomplete)", "guid": ""}],
+              "dependents": []}],
+ "discovery_notes": [{"org": "Tenant2", "kind": "discovery_failed",
+                      "object": "Ops (...)", "detail": "cohort listing failed: ..."}]}
 ```
+
+`summary.models_incomplete` counts the Models in `blocked` **only** because their cohort
+listing failed or returned a row that is not a recognisable Set; `discovery_notes` (kinds
+`discovery_failed`, `unrecognised_row`) names each one and why. Such a Model is blocked
+because its Set list is unknown, not because a Set was found — check it before planning
+around it.
 
 ### What happens to a blocked tenant
 
@@ -4429,9 +4510,120 @@ low-risk tenants migrate now, Sets-using tenants form a later batch.
 
 ### Cost
 
-One `LOGICAL_COLUMN` search per Org, sliced per Model — deliberately not one call per
-Model, because being cheap enough to run fleet-wide is the command's whole justification.
-Dependents are walked only for Models that actually carry a cohort column.
+One cohort-listing call per Model (0.3–1.7s each, live). The earlier design — one
+cluster-wide `LOGICAL_COLUMN` search per Org — did not finish in 2h45m on se-thoughtspot
+(BL-325). Dependents are walked only for Models that actually carry a cohort column, and
+are queried as `LOGICAL_COLUMN`; the default `LOGICAL_TABLE` returns nothing for a Set.
+
+---
+
+## `ts sets` — reusable Set inventory and report (read-only)
+
+Used by the `ts-object-set-manager` skill. Reports every **reusable Set** (cohort) on the
+scoped Models: what depends on it, a class (keep / candidate / review), and where every
+grant on it came from. **Changes nothing.**
+
+```bash
+ts sets inventory --model-contains DUNDER -p se
+ts sets inventory --org ORG1 --dry-run -p se
+ts sets inventory --all-orgs -o ./sets-inventory.json -p se
+ts sets report ./sets-inventory.json -o ./sets-report
+```
+
+### `ts sets inventory`
+
+| Option | Meaning |
+|---|---|
+| `--model <guid\|exact name>` | Repeatable. Combinable with the others; Models are de-duplicated by GUID |
+| `--model-contains <text>` | Repeatable; case-insensitive substring of a Model name |
+| `--org <name\|id>` | Repeatable; every Model that Org **owns** (visibility is not ownership). Without `--org`, the profile's default Org |
+| `--all-orgs` | Cluster scope: every ACTIVE Org in turn. **Ignores `--org`.** A non-ACTIVE Org is skipped and recorded as an `org_skipped` note |
+| `--dry-run` | Resolve scope only — Models matched per Org on stdout, a rough time estimate on stderr. No Set scan |
+| `-o`, `--output <path>` | Also write the JSON to this file (stdout always carries it) |
+| `--profile`, `-p` | Profile (or `TS_PROFILE`) |
+
+At least one scope flag is required. A selector that matches no Model in any Org exits 1
+with `No Model matched: …` before anything is scanned. There is no connection scope yet
+(BL-328).
+
+**How it works.** Per Model, one call to the internal cohort listing
+`GET /callosum/v1/metadata/detail/{model}?type=LOGICAL_TABLE&fetchcohortcolumnsonly=true`
+(0.3–1.7s live). This endpoint is **private and undocumented** (Confluence SAGE/4309319694);
+a 404 means the build moved it. The public routes do not work: Model dependents omit Sets,
+and a cluster-wide `LOGICAL_COLUMN` search did not finish in 2h45m. Set membership is the
+presence of `cohortConfig`, never the header `type`, which is often blank. Per Set it then
+reads dependents (as `LOGICAL_COLUMN`), exports each Liveboard dependent's TML to find the
+visualizations (`search_query`, `answer_columns[].name`, formula `expr`) and filters that
+name `[Set Name]`, and reads `DEFINED` grants on the Set and its consumers.
+
+**Output** — JSON, schema `ts-sets-inventory/1`:
+
+| Key | Content |
+|---|---|
+| `schema`, `generated_at`, `profile`, `scope` | Run metadata; `scope` echoes the selectors |
+| `orgs[]` | `{org, models[], notes[]}` per Org scanned |
+| `orgs[].models[]` | `{guid, name, discovery, set_count, sets[]}`. `discovery` is `COMPLETE` or `INCOMPLETE`; an `INCOMPLETE` Model has `set_count: null` — **unknown, not zero** |
+| `…sets[]` | `guid, name, model_guid, model_name, author, cohort_type, grouping_type, anchor_column, class, reason, target, dependents[], dependents_complete, liveboards{}, grants[]` |
+| `…dependents_complete` | `false` when the dependents list may be short (failed or partial lookup, an uninspected dependent type, an unreadable export). The report then shows the count as "unknown" or "≥N", never as a total |
+| `…grants[]` | `{principal_id, principal_name, principal_type, permission, provenance}` |
+| `notes[]` (top level) | `org_skipped`, with `reason`: `inactive` (a scope choice) or `malformed` (no `orgId`/`status` — the report marks the totals a floor) |
+| `summary` | `models, models_incomplete, sets, by_class, unexplained_grants, unknown_grants` |
+
+`--dry-run` output is `{schema, dry_run: true, scope, orgs: [{org, models}], notes}`.
+
+**Classes** — first matching rule wins; uncertainty is resolved before any candidate verdict:
+
+| Class | Rule |
+|---|---|
+| `KEEP_FILTER` | Named in a Liveboard filter |
+| `REVIEW_MANUAL` | A dependent lookup failed or hid dependents, a Liveboard export was unreadable, a dependent is another type (including another Set), or a Liveboard depends on the Set but no visualization or filter naming it was found. `reason` says which |
+| `KEEP_SHARED` | 2+ dependent objects, or one Liveboard with 2+ visualizations using it |
+| `CANDIDATE_ANSWER` | Exactly one dependent, an Answer (`target` names it) |
+| `CANDIDATE_VIZ` | Exactly one dependent, a Liveboard, one visualization (`target` names the viz) |
+| `REVIEW_DELETE` | No recorded dependents — unsaved ad-hoc searches are invisible |
+
+A Set referenced only inside a visualization formula counts as used.
+
+**Provenance** — per `DEFINED` grant on the Set; same-principal matching, groups not expanded:
+
+| Provenance | Rule |
+|---|---|
+| `DIRECT` | Edit (MODIFY) grant |
+| `REQUIRED` | View, and the principal owns (authored) content that uses the Set — revoking breaks it |
+| `EXPLAINED` | View, and the principal holds a grant on content that uses the Set (copied at share time) |
+| `UNEXPLAINED` | View, and no consumer explains it — the only label on the review list |
+| `UNKNOWN` | Grants could not be read, **or** consumers are uncertain (a failed dependents lookup, hidden dependents, a dependent with no author, an uninspected dependent type), so `EXPLAINED`/`UNEXPLAINED` cannot be decided |
+
+`NO_ACCESS` grants are dropped.
+
+**Per-Org `notes[]` kinds** — every one names the object:
+
+| Kind | Meaning |
+|---|---|
+| `discovery_failed` | A Model's cohort listing failed or returned a non-list; the Model is `INCOMPLETE` |
+| `unrecognised_row` | The listing returned a row that is not a recognisable Set; the Model is `INCOMPLETE` |
+| `dependents_failed` | A Set's dependents lookup failed or reported inaccessible dependents |
+| `export_unreadable` | A Liveboard dependent's TML export failed or was not Liveboard TML |
+| `unrecognised_dependent` | A dependent of a type not inspected (e.g. another Set) |
+| `grants_unreadable` | `fetch-permissions` failed; that Set's provenance is `UNKNOWN` |
+
+### `ts sets report <inventory.json>`
+
+| Option | Default | Meaning |
+|---|---|---|
+| `<inventory.json>` | required | Full output of `ts sets inventory` (dry-run output is refused, exit 1) |
+| `-o`, `--output <dir>` | `.` | Directory for `report.html` (self-contained) and `report.md` |
+
+**Output:** `{"html": path, "markdown": path}` on stdout. The report carries the summary, a
+row per Set per Model, expandable dependents and grants, the review lists (`REVIEW_DELETE`
+Sets and `UNEXPLAINED` grants — never a `REQUIRED` one) and every scan note.
+
+**Links.** `ts sets inventory` records the cluster's `base_url` in the document, and the report
+links every object that has a ThoughtSpot page: Models (`/#/data/tables/{guid}`), Answers
+(`/#/saved-answer/{guid}`) and Liveboards (`/#/pinboard/{guid}`), opening in a new tab in
+the HTML and as `[name](url)` in the Markdown, which also lists each used Set's dependents.
+Sets are not linked (a Set is a hidden column on its Model and has no page). A link opens in
+the Org the browser is signed in to. An inventory without `base_url` renders unlinked.
 
 ---
 
@@ -4454,6 +4646,10 @@ ts migrate apply --source-org ACME --target-org "ACME NEW" -d ./plan --resume
 
 `--plan-dir` holds the approved `column-mapping.csv` from `ts migrate audit`, and receives
 `backup/` and the `state.json` ledger.
+
+`--sets-scan` is optional: without it apply runs the Set discovery itself. A scan file that
+does not carry both `discovery_notes` (list) and `summary.models_incomplete` predates BL-325 (its detection
+missed blank-type Sets) and is **refused** — re-run `ts migrate scan-sets`.
 
 **One Model per apply.** A mapping covering several Models (`audit --all-models` writes
 one by design) is **refused**: apply binds every rewritten object to ONE published
@@ -4574,3 +4770,201 @@ Re-running the same wave is a **no-op**: the merged document comes out byte-iden
 > everyone in the Org, admins included, so an admin session in the target Org matches the same
 > pathway a tenant user does. (That is the opposite of a *sharing* check, where an admin proves
 > nothing.) Confirmed live 2026-07-28: an ORG1 session shows `Segment` on the published master.
+
+## `ts calendar` — Custom calendar generation and registration
+
+Build week-aligned custom calendars (4-4-5, 4-5-4, 5-4-4, 13x4) with correct 52/53-week
+tiling, for the `ts-object-calendar-builder` skill. The pure grid/label/row logic lives in
+`ts_cli/custom_calendar/*`; `commands/calendars.py` only wires typer options and I/O.
+`preview` and `generate` share one option set (`--start-month`, `--start-day`, `--pattern`,
+`--anchor`, `--first-year`, `--last-year`, `--leap-week-period`, `--year-prefix`,
+`--quarter-prefix`, `--year-basis`, `--monthly-basis`, `--quarterly-basis`,
+`--fiscal-year-number`, `--month-names`, `--day-names`) so the two can never drift apart —
+see [the skill's anchor-rules reference](../../agents/cli/ts-object-calendar-builder/references/anchor-rules.md)
+for what each one means.
+
+**Two label options carry a ThoughtSpot filter-widget caveat**, and `validate` warns on
+both. A `month` label that is not a month name (`Period 01`, or any custom
+`--month-names`) **cannot be selected** in a filter widget; a prefixed `year`
+(`--year-prefix FY` → `FY2024`) **cannot be typed** into the year filter, which takes
+`YYYY` only. `--quarter-prefix` (`Q1`) is **unaffected** — the rule is specific to the
+year filter, so this is an asymmetry, not "prefixes break filters". Neither limits the
+calendar otherwise: date-range and dynamic filters ("this year") work, and query
+generation, grouping, aggregation and display are unaffected. Product knowledge confirmed
+at review 2026-09-16 (not an automated probe) — detail in
+[the skill's open-items.md](../../agents/cli/ts-object-calendar-builder/references/open-items.md)
+item 6.
+
+### `ts calendar preview`
+
+Print the year/period shape (which years are 53 weeks, which period absorbs the extra
+week) without generating any rows — the confirmation gate before `generate`.
+
+```bash
+ts calendar preview --start-month February --start-day Monday \
+  --pattern 4-5-4 --anchor nearest --first-year 2015 --last-year 2026
+```
+
+**Output:** JSON to stdout — `{pattern, anchor_rule, periods_per_year, years[]}`, each year
+carrying `weeks`, `period_weeks[]` and `long_period`.
+
+### `ts calendar generate`
+
+Generate the calendar as a CSV matching the column contract.
+
+```bash
+ts calendar generate --start-month February --start-day Monday \
+  --pattern 4-5-4 --anchor nearest --first-year 2015 --last-year 2026 \
+  --out retail.csv
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--columns` | `30` | `10` (minimal) or `30` (full) column contract — see [calendar-table-contract.md](../../agents/cli/ts-object-calendar-builder/references/calendar-table-contract.md). **Only 30 registers:** `createCalendar` rejects a 10-column table on 10.12+ even with correct types (verified live 2026-09-16); `10` is an intermediate artifact only, and `validate` warns when it sees one |
+| `--out` | *(required)* | CSV output path |
+| `--ddl` | — | Also write the Snowflake `CREATE TABLE` for the same shape to this path — quoted lower-case columns and contract types, which is what the API requires. Needs `--database` and `--schema` |
+| `--database` / `--schema` | — | Target database/schema for `--ddl`. Rejected without `--ddl` rather than silently ignored |
+| `--table` | `--out` stem | Table name for `--ddl` |
+| `--discriminator-column` / `--discriminator-value` | — | Give both to tag every row with an RLS discriminator literal, for one variant of a union calendar. `--discriminator-column` also adds the column to `--ddl` output |
+
+**Output:** the CSV at `--out`; a JSON summary (`{rows, columns, path}`, plus `ddl_path` when
+`--ddl` is given) to stdout, row count to stderr.
+
+Loading the CSV with `ts load snowflake` produces UPPER_CASE columns, which ThoughtSpot
+rejects — the skill's
+[`references/fix-column-case.sql`](../../agents/cli/ts-object-calendar-builder/references/fix-column-case.sql)
+re-aliases them afterwards. `--ddl` is the alternative for a table created by hand.
+
+### `ts calendar compare`
+
+Show what one option choice actually changes before committing to it — reports only
+disagreements, so "0 of 364 rows differ" is a valid (and useful) answer.
+
+```bash
+ts calendar compare --vary anchor --start-month February --start-day Monday \
+  --pattern 4-5-4 --anchor nearest --first-year 2015 --last-year 2026
+```
+
+`--vary anchor` also reports `first_divergence` — the first year the anchor rules stop
+agreeing; any test range shorter than that makes the native ThoughtSpot API look correct
+when it silently isn't.
+
+| Option | Default | Description |
+|---|---|---|
+| `--vary` | *(required)* | `anchor`, or one label dimension: `year-basis`, `monthly-basis`, `quarterly-basis`, `fiscal-year-number` |
+| `--max-samples` | `10` | Cap on the sample differing rows returned (label dimensions only — `--vary anchor` reports every year) |
+
+A label dimension re-renders every row under both of its values (`fiscal` vs `gregorian`,
+or `start` vs `end`) and reports the rows where the `year` / `monthly` / `quarterly`
+labels disagree. `--month-names`, `--day-names`, `--year-prefix` and `--quarter-prefix`
+are *inputs* to `compare`, not dimensions it can vary — they apply to both sides.
+
+**Output:** JSON to stdout — `{vary, values, total_rows, differing_rows, samples[]}` for a
+label dimension; `{vary, values, years[], first_divergence,
+nearest_vs_fixed52_first_divergence}` for `--vary anchor`.
+
+### `ts calendar validate`
+
+Check one or more generated CSVs against the column contract and the structural
+invariants; with 2+ `--csv` paths, also checks cross-variant label consistency for a
+union/RLS calendar set.
+
+```bash
+ts calendar validate --csv tenant_a.csv --csv tenant_b.csv
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--csv` | *(required, repeatable)* | Calendar CSV to check — repeat for an RLS set. Each path must be a distinct file; the same file twice is an error |
+| `--allow-label-drift` | `false` | Downgrade cross-variant label mismatches from error to warning |
+
+The header must match the 10- or 30-column contract **exactly**, optionally followed by
+one trailing RLS discriminator column; anything else is a `column-contract` error naming
+the missing or unexpected columns. Uniqueness and continuity of `date` are checked **per
+file**, not across the set — a union/RLS set deliberately repeats each date once per
+variant.
+
+Three checks are **warnings** (exit 0) rather than errors, because the calendar they
+describe is legitimate — just constrained: `ten-column-not-registrable` (the 10-column
+shape the API rejects), `month-label-not-filter-selectable` (a `month` label that is not
+a month name cannot be selected in a filter widget) and `year-label-not-filter-typeable`
+(the year filter takes `YYYY` only, so a `--year-prefix` value cannot be typed into it).
+The last two are mitigated by filtering on a date range, a dynamic filter ("this year"),
+or the numeric columns. A prefixed `quarter` (`Q1`) works and is deliberately not
+flagged.
+
+**Output:** JSON `{findings[]}` to stdout, each with `severity`/`code`/`message`/`source`.
+Exits non-zero if any finding is `severity: error`.
+
+### `ts calendar register`
+
+Register a calendar with ThoughtSpot (`POST /api/rest/2.0/calendars/create`). Default path
+is `FROM_EXISTING_TABLE`, registering a table this CLI already generated and loaded.
+`--native` uses `FROM_INPUT_PARAMS` and is refused for any anchor rule other than
+`fixed52`, and for pattern `13x4` regardless of anchor — the native API has no 13-period
+calendar type and never inserts a leap week.
+
+```bash
+ts calendar register --name RetailCal --connection "Snowflake Prod" \
+  --database CUSTOM_CALENDAR --schema PUBLIC --table retail_cal
+```
+
+**Output:** JSON response from `calendars/create`, to stdout.
+
+### `ts calendar search`
+
+List registered custom calendars, to verify what landed.
+
+```bash
+ts calendar search --connection "Snowflake Prod"
+```
+
+**Output:** JSON array from `POST /api/rest/2.0/calendars/search`, to stdout.
+
+## `ts link` — Link a semantic-layer object for direct query
+
+Register a semantic object (Snowflake Semantic View, Databricks Metric View, Honeydew, Cube,
+Kyvos) as a ThoughtSpot Table plus a thin Model that references only that Table — no joins,
+no formulas. The platform generates the SQL from its own definitions. Used by the
+`ts-link-semantic-layer` skill. Creates new objects only (re-linking: BL-318).
+
+### `ts link build`
+
+```bash
+ts link build --spec spec.json --aggregation aggregate --model-name "Semantic SQL - Sales" --dry-run
+TS_ORG=1111689045 ts link build --spec spec.json --aggregation aggregate \
+    --model-name "Semantic SQL - Sales" --profile my-profile
+ts link build --spec hd.json --aggregation standard --model-name "Sales (Honeydew)" \
+    --default-aggregation SUM
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--spec` | required | Normalized spec JSON: `connection`, `db`, `schema`, `db_table`, optional `description` / `instructions`, and `columns[]` of `{name, data_type, kind, description?, synonyms?, ai_context?, display_name?, aggregation?, expr?}` |
+| `--aggregation` | required | `aggregate` — every measure `AGGREGATE`. `standard` — each measure's own aggregation from `aggregation`, else inferred from the outermost function of `expr` (`SUM(x)`, `COUNT(DISTINCT x)`, `SUM(x) FILTER (WHERE …)`) |
+| `--model-name` | required | Model display name |
+| `--table-name` | spec `db_table` | ThoughtSpot Table name |
+| `--naming` | `humanize` | Model column names: `humanize` (`revenue_gbp` → `Revenue GBP`) or `raw`; a column's `display_name` always wins |
+| `--default-aggregation` | none | `standard` mode only (ignored otherwise): aggregation for measures with no explicit or inferable one. Without it they fail the build, listed |
+| `--spotter/--no-spotter` | on | Spotter on the Model |
+| `--output-dir` | `.` | Where `table.tml` and `model.tml` are written (overwritten if present) |
+| `--profile`, `-p` | first profile / `TS_PROFILE` | ThoughtSpot profile; the Org comes from `TS_ORG` |
+| `--dry-run` | off | Build and write TML only |
+
+Behaviour:
+
+- **Non-numeric measures are skipped** and listed in `skipped`: ThoughtSpot coerces a
+  non-numeric MEASURE to ATTRIBUTE, which queries the platform measure without its measure
+  function (Databricks: `METRIC_VIEW_MISSING_MEASURE_FUNCTION`).
+- **Spotter instructions** are written with `POST /api/rest/2.0/ai/instructions/set`
+  (scope `GLOBAL`), never TML — a TML import reports OK but persists nothing. A failure is
+  reported in `instructions_result` and does not undo the link.
+- **Coercion check:** after import the Model is re-exported and every column's
+  `column_type` / `aggregation` compared with what was sent; differences land in `coerced`.
+- **Already linked:** ThoughtSpot matches a Table on `connection/db/schema/db_table`, not
+  name, and refuses a second one; the command exits 1 with `existing_table_guid`.
+
+**Output:** JSON summary to stdout — counts, `aggregation_source`, `skipped`, `instructions`,
+`warnings`, `table_guid`, `model_guid`, `instructions_result`, `coerced`, and `error` on
+failure. Once the Table exists, every later failure (HTTP error, client exit, non-JSON body)
+is reported with `table_guid` on stdout — never an exit that loses it.

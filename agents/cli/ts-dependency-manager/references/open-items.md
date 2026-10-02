@@ -49,19 +49,40 @@ to the column before removal; remove affected joins and report them.
 
 ---
 
-## #9 — Column security rule TML retrieval — RESOLVED 2026-08-27
+## #9 — Column security rule TML retrieval — RESOLVED 2026-09-22
 
-TML structure is documented and detection/update logic is mechanical. The **retrieval
-mechanism** was the open question: on champ-staging, the v2 `--associated` export does
-not return CSR files — confirmed correct, they don't. The fix isn't via `--associated`
-at all: `POST /api/rest/2.0/security/column/rules/fetch` (beta, 10.12.0.cl+) retrieves
-them directly, scoped by table GUID. Wired in `ts_cli/report/impact_probes.py::fetch_column_security_rules`,
-exposed via `ts metadata report`'s "Column security rules (CSR)" coverage row, and
-feeding the aggregate STOP condition (`ts_cli/report/classifier.py::aggregate_classification`,
-which already checked `csr_hits` — that half of STOP was dead code until this fix
-actually populated it). See dependency-types.md row #9 and
-`agents/cli/ts-convert-from-dbt/references/open-items.md` #8 for the fuller fix history
-(found while porting a live-tested column-impact prototype into `ts_cli/report/`).
+TML structure was documented and the detection/update logic was mechanical; the
+**retrieval mechanism** was the open question. The original observation was accurate
+but incomplete: a plain `--associated` export does not return CSR, which is why it
+looked UI-only. The export needs a second option alongside it.
+
+**Finding:** CSR round-trips through TML as a sibling document — the same pattern as
+`column_alias` — and is retrievable via the API with **both**
+`export_associated: true` **and** `export_options.export_column_security_rules: true`.
+The option is Beta (10.12+); without it the CSR document simply is not in the
+response, which is exactly the empty result that made this look impossible.
+
+Shipped as `ts security column-rules export` (`tools/ts-cli/ts_cli/commands/security.py`).
+The read side — which columns are restricted and which groups can see each — is
+`ts security column-rules get`, returning one row per (table, column) with
+`group_names`.
+
+```bash
+ts security column-rules export "{table}" --out "{dir}" --profile "{profile}"
+ts security column-rules get "{table}" --profile "{profile}"
+```
+
+An empty result is a legitimate answer: a table with no secured columns has no
+document to return.
+
+**Consequence worth carrying:** CSR does **not** travel with publication
+(live-verified 2026-07-27), so a tenant Org needs its own document naming its own
+groups, imported separately. Preserving the exported document is what makes a
+tenant's configuration restorable rather than reconstructible from CLS grants.
+
+**Downstream closed by this:** `ts-object-model-aggregates` no longer asks the operator
+to recall whether base tables carry column security — it reads both mechanisms
+(2026-09-22 audit findings 5.1 / 5.2).
 
 ---
 

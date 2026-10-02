@@ -28,6 +28,8 @@ imports `run_ts` yet needs no credentials; it just needs the CLI installed).
 | `smoke_ts_migrate_orgs.py` | ts-migrate-orgs | Pure |
 | `smoke_ts_object_model_alias.py` | ts-object-model-alias | Pure |
 | `smoke_ts_object_model_erd.py` | ts-object-model-erd | Pure |
+| `smoke_ts_link_semantic_layer.py` | ts-link-semantic-layer | Pure |
+| `smoke_ts_object_calendar_builder.py` | ts-object-calendar-builder | Pure |
 | `smoke_ts-convert-to-databricks-mv.py` | ts-convert-to-databricks-mv (codified emitter) | Pure (`--live` opts in) |
 | `smoke_ts_convert_from_qlik.py` | ts-convert-from-qlik | CLI-only |
 | `smoke_ts_load_source_data.py` | ts-load-source-data | CLI-only |
@@ -40,6 +42,7 @@ imports `run_ts` yet needs no credentials; it just needs the CLI installed).
 | `smoke_ts_dependency_manager.py` | ts-dependency-manager | Live (TS) |
 | `smoke_ts_audit.py` | ts-audit | Live (TS) |
 | `smoke_ts_object_model_coach.py` | ts-object-model-coach | Live (TS) |
+| `smoke_ts_object_set_manager.py` | ts-object-set-manager | Live (TS) |
 | `smoke_ts_object_model_aggregates.py` | ts-object-model-aggregates | Live (TS + SF) |
 | `smoke_ts_object_model_agentql_query.py` | ts-object-model-agentql-query | Live (TS) |
 | `smoke_ts_variable_timezone.py` | ts-variable-timezone | Live (TS) |

@@ -58,8 +58,9 @@ jobs:
           python3 tools/validate/check_secrets.py --root . --all || rc=1
           python3 tools/validate/check_references.py --root . || rc=1
           python3 tools/validate/check_patterns.py --root . || rc=1
-          python3 tools/validate/check_version_sync.py --root . || rc=1
+          python3 tools/validate/check_version_sync.py --root . --base origin/main || rc=1
           python3 tools/validate/check_module_health.py --root . || rc=1
+          python3 tools/validate/check_python_redefinitions.py --root . || rc=1
           python3 tools/validate/check_file_size.py --root . || rc=1
           python3 tools/validate/check_yaml.py --root . || rc=1
           python3 tools/validate/check_sv_yaml.py --root . || rc=1
@@ -74,14 +75,16 @@ jobs:
           # Filesystem-state gates that previously ran ONLY in pre-commit (bypassable
           # via --no-verify with no server-side catch). They derive purely from repo
           # contents, so they work in a clean CI checkout.
-          python3 tools/validate/check_coverage_matrix.py --root . || rc=1
+          python3 tools/validate/check_coverage_matrix.py --root . --base origin/main || rc=1
           python3 tools/validate/check_formula_catalog.py --root . || rc=1
           python3 tools/validate/check_converter_parity.py --root . || rc=1
           python3 tools/validate/check_mapping_code_sync.py --root . || rc=1
           python3 tools/validate/check_harness_routing.py --root . || rc=1
           python3 tools/validate/check_no_v1_endpoints.py --root . || rc=1
-          python3 tools/validate/check_lint_invariant_list.py --root . || rc=1
+          python3 tools/validate/check_lint_invariant_list.py --root . --base origin/main || rc=1
           python3 tools/validate/check_no_inline_tml_gate.py --root . || rc=1
+          python3 tools/validate/check_i7_gate.py --root . || rc=1
+          python3 tools/validate/check_open_item_citations.py --root . || rc=1
           python3 tools/validate/check_skill_cli_usage.py --root . || rc=1
           # 2026-07-03 audit-harvest validators (see .claude/rules/repo-audit.md).
           python3 tools/validate/check_no_inline_requests.py --root . || rc=1
@@ -94,13 +97,17 @@ jobs:
           # Presence gate: every shared mapping/schema must carry a currency anchor
           # (staleness is soft and never fails — only missing/malformed anchors do).
           python3 tools/validate/check_mapping_currency.py --root . --check || rc=1
+          # Cross-REPO: needs an apache/ossie checkout, which CI does not have, so
+          # this reports "skipping" and exits 0 there. It earns its keep locally and
+          # in the sweep; running it here keeps it from silently rotting.
+          python3 tools/validate/check_ossie_mapping_sync.py --root . --check || rc=1
           python3 tools/validate/generate_open_items_index.py --root . --check || rc=1
           python3 tools/validate/check_mirror_sync.py || rc=1
           python3 tools/validate/generate_parity.py --check || rc=1
           # Internal-import + repo-hygiene gates (2026-07-29 audit findings 4.2/1.1/1.2).
           python3 tools/validate/check_internal_imports.py --root . || rc=1
           python3 tools/validate/check_repo_hygiene.py --root . || rc=1
-          python3 tools/validate/check_backlog_integrity.py --root . || rc=1
+          python3 tools/validate/check_backlog_integrity.py --root . --base origin/main || rc=1
           # Quality gates catalog — soft baseline check here (the catalog includes
           # git-log dates that shift when any validator is touched by a contributor
           # PR, so a hard gate on every PR would force every contributor to
@@ -185,7 +192,7 @@ jobs:
         # an invocation with tools/ts-cli/tests.
         if: ${{ !cancelled() }}
         run: |
-          pytest tools/ts-cli/tests/ tools/validate/tests/ -q
+          pytest tools/ts-cli/tests/ tools/validate/tests/ tools/ossie-roundtrip/tests/ -q
           pytest agents/cli/ts-object-model-erd/tests/ -q
           pytest agents/databricks/tests/ -q
 
@@ -249,7 +256,7 @@ jobs:
       - name: Run unit + validator tests
         # Same three invocations as `suite` (see that job for why they're split).
         run: |
-          pytest tools/ts-cli/tests/ tools/validate/tests/ -q
+          pytest tools/ts-cli/tests/ tools/validate/tests/ tools/ossie-roundtrip/tests/ -q
           pytest agents/cli/ts-object-model-erd/tests/ -q
           pytest agents/databricks/tests/ -q
 

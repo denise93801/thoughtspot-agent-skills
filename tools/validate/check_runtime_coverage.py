@@ -67,8 +67,18 @@ EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
         "CLI only — depends on ts CLI for all operations",
     ("ts-object-model-coach", "coco-snowsight"):
         "Interactive coaching workflow doesn't fit Snowsight stored-proc execution model",
+    ("ts-object-set-manager", "coco-snowsight"):
+        "CLI-only: Set inventory runs the ts CLI against ThoughtSpot and is not part of "
+        "the Snowflake conversion pipeline CoCo is scoped to.",
     ("ts-object-model-erd", "coco-snowsight"):
         "TML parsing + HTML rendering require shell access; not supported in Snowsight stored-proc runtime",
+    ("ts-link-semantic-layer", "coco-snowsight"):
+        "CLI-only: `ts link build` runs in the ts CLI and writes Spotter "
+        "instructions through the REST v2 ai/instructions API; CoCo has no ts CLI.",
+    ("ts-object-calendar-builder", "coco-snowsight"):
+        "CLI-only: generation runs in the ts CLI and the calendar is registered "
+        "through the REST v2 /calendars endpoints; CoCo has no ts CLI and no "
+        "stored-procedure equivalent for calendar registration.",
     ("ts-profile-snowflake", "coco-snowsight"):
         "CoCo Snowsight runs inside Snowflake — no Snowflake profile needed",
     ("ts-profile-databricks", "coco-snowsight"):

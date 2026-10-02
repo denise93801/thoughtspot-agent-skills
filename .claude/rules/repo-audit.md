@@ -47,7 +47,7 @@ for new codification opportunities.
 | 6 | Testing-framework value | Tests assert behaviour, not just presence; smoke tests are real | `check_smoke_tests` (presence) + MANUAL (value) |
 | 7 | PR-validation effectiveness | CI is not a strict subset of pre-commit; gates actually fire; gate effectiveness review (see `docs/quality-gates.md` audit checklist) | `generate_quality_gates --check` (catalog freshness) + MANUAL (effectiveness review) |
 | 8 | Cross-runtime skill drift | CLI / CoCo / Databricks mirrors in sync; parity matrix current | `check_mirror_sync`, `check_runtime_coverage`, `generate_parity --check`, `check_skill_naming` |
-| 9 | Conversion consistency **+ implementation drift** | Two halves. (a) *Semantic*: every converter agrees with the invariants. (b) *Implementation*: converters agree on **how** they are built — shared helpers in `formula_common` imported rather than re-implemented or skipped, one spelling per emitted construct, nothing hand-instructed in prose that a sibling codified. Scope is **discovered, never listed** — a new `ts-convert-*` is audited from its first commit. | `conversion-consistency-auditor` agent (**now invoked by the sweep** — see the note below), `check_coverage_matrix`, `check_formula_catalog`, `check_converter_parity` (landed 2026-08-26; BL-217 part 1) |
+| 9 | Conversion consistency **+ implementation drift** | Two halves. (a) *Semantic*: every converter agrees with the invariants. (b) *Implementation*: converters agree on **how** they are built — shared helpers in `formula_common` imported rather than re-implemented or skipped, one spelling per emitted construct, nothing hand-instructed in prose that a sibling codified. Scope is **discovered, never listed** — a new `ts-convert-*` is audited from its first commit. | `conversion-consistency-auditor` agent (**now invoked by the sweep** — see the note below), `check_coverage_matrix`, `check_formula_catalog`, `check_converter_parity` (landed 2026-08-26; BL-217 part 1), `check_ossie_mapping_sync` (cross-REPO: this repo's Ossie function mapping vs the converter donated to apache/ossie, which can now drift with no shared gate — opt-in, needs an ossie checkout) |
 | 10 | Security | No secrets, no v1 endpoints, credential-handling rules honoured | `check_secrets`, `check_no_v1_endpoints` |
 | 11 | Codification | (a) Repeated skill logic that should become `ts` CLI / shared reference / validator; (b) *agentic → deterministic*: skill steps that are mechanical transformations (parsing, type mapping, TML emission, formula rewriting) currently executed by the LLM but codifiable as deterministic Python — yielding faster, cheaper, more reproducible results. The Tableau `translate-formulas` pipeline (ts-cli v0.17.0) is the reference pattern. | `jscpd` (code-duplication report, sweep) + MANUAL |
 | 17 | Change correctness (delta bug-hunt) | Correctness bugs and `.claude/rules`/CLAUDE.md violations in the code that landed **since the last full audit** — the backstop for what slipped past per-PR review. Distinct from angle 4 (which is code *health*: complexity, dead code, duplication) — this hunts for *behavioural bugs*. | **full sweep only:** a `max`-level `/code-review` agent over the `<last-full-audit-sha>..HEAD` diff (see below) + **per-PR `/code-review` (recommended, primary net)** |
@@ -136,7 +136,7 @@ product. This is the **weekly specialist sweep**. Kept tractable by *currency an
 
 | # | Angle | What it checks | Enforcement |
 |---|---|---|---|
-| 13 | **Product currency** | Per-platform: are our mappings, schemas, and "untranslatable" verdicts still accurate against the product's *current* capabilities? Newly-possible translations, deprecated constructs, new artifact types (chart libraries, semantic-view / metric-view features), API & version drift. | Weekly specialist sweep (per platform) + `check_mapping_currency` (per-PR staleness nudge) |
+| 13 | **Product currency** | Per-platform: are our mappings, schemas, and "untranslatable" verdicts still accurate against the product's *current* capabilities? Newly-possible translations, deprecated constructs, new artifact types (chart libraries, semantic-view / metric-view features), API & version drift. | Weekly specialist sweep (per platform) + `check_mapping_currency` — per-PR staleness nudge (age), plus `--check-upstream` in the weekly sweep, which compares an anchor citing `<repo> @ <sha>` against that repo's HEAD and reports only the commits touching a watched path |
 | 14 | **Performance** | (a) *skill runtime* — redundant API round-trips, un-batched prompts, the obj_id read-back pattern; (b) *generated-artifact efficiency* — do emitted formulas use performant TS constructs (`group_aggregate` vs `sql_*_aggregate_op`, join cardinality) or slow ones; (c) *ts-cli* — pagination, token-cache reuse. | Weekly sweep + MANUAL |
 | 16 | **Dependency / supply-chain currency** | Python deps (`typer`, `requests`, `PyYAML`, `keyring`) — pinned ranges, known CVEs, EOL Python versions. | Weekly sweep + `pip-audit` gate (per-PR CI step over core + `[snowflake,qlik]` extras, plus weekly cron — see `.github/workflows/validate.yml`) |
 | 18 | **Harness / framework currency** | The Claude setup itself, checked against the current Claude Code + model lineup: `.claude/settings.json` (stale model pins, unused new settings), `.claude/agents/*.md` frontmatter (model/effort tiers vs `.claude/rules/model-routing.md` and the current model tiers), `.claude/workflows/` (capabilities the runner has gained), and the currency anchors on those `.claude/rules/*.md` files that carry one (today just `model-routing.md`, which `check_mapping_currency` nudges via `ANCHORED_FILES` — the rest are internal rules with no external state to go stale). Same pattern as angle 13, pointed inward — the quality framework goes stale exactly the way product mappings do (a pinned `claude-opus-4-6` sat in settings.json after the Claude 5 family shipped; found manually 2026-07-28). **Repo-scoped only — see the boundary note below.** | Weekly sweep + `check_audit_workflow_permissions.py` (asserts the sweep's own research tools stay pre-approved — finding 18.1) |
@@ -180,7 +180,7 @@ those is visible to any validator in this repo, which is the case for the angle 
 
 | | |
 |---|---|
-| **Cadence** | **Full sweep only** — never the weekly external one. It needs a live warehouse, a live cluster and ~100 disposable objects; that cost only earns out at the deliberate on-demand cadence. |
+| **Cadence** | **Operator-run, not workflow-run.** `.claude/workflows/repo-audit.js` contains no angle-15 finder, so a run invoked as `scope: "full"` does not measure fidelity and cannot say so — the 2026-09-22 sweep reported `scope=full` with angle 15 never executed (finding 18.1). Run it from `docs/reviews/2026-09-08-sv-patterns-roundtrip-fidelity.md` by hand. Full-sweep cadence, never the weekly one. It needs a live warehouse, a live cluster and ~100 disposable objects; that cost only earns out at the deliberate on-demand cadence. |
 | **Fixture** | The upstream pattern corpus, staged one schema per pattern (they collide on shared table names — see the study's own amended spec). |
 | **Method** | Three-stage numeric comparison plus construct-level structural survival. The study's harness was throwaway by design; a rerunnable one is BL-247's neighbourhood, not a prerequisite. |
 
@@ -228,6 +228,19 @@ re-reviews everything; with them, each run is incremental.
 has a missing anchor, or one older than ~6 months. It never blocks — external knowledge
 can't gate a PR — but it keeps anchors from rotting.
 
+**Age alone is not enough, and the gap was real.** An anchor may also cite the upstream
+commit it was validated against (`apache/ossie @ b5da5d6`). Nothing checked that SHA:
+`docs/ossie/*` sat anchored while upstream ran 55 commits ahead — 14 of them touching
+`core-spec/`, including the one-document format change (#383) and the OSSIE_SQL_2026
+registration (#439) — and because the anchor read `2026-08` the six-month test stayed
+silent, and would have until February. `--check-upstream` closes that. It is **opt-in**
+because it needs the network, so pre-commit stays offline; the weekly sweep passes it.
+
+It reports only commits touching `UPSTREAM_WATCHED_PATHS`, not raw commit count: 55
+commits of converter work do not make a spec anchor stale, and a nudge that fired on
+every upstream merge would be ignored within a week. An unreachable upstream reports
+`unknown`, never "no drift".
+
 ---
 
 ## Platforms in scope (expand here)
@@ -262,7 +275,7 @@ completes, and the report still arrives looking complete.
 |---|---|---|
 | Internal validators (1–10 where automated) | Every PR | pre-commit + CI |
 | **External sweep (13, 14, 16, 18)** | On demand, **when nudged** (~weekly threshold) | `Workflow({name: "repo-audit", args: {scope: "external"}})` |
-| Full deep audit (all angles, **incl. 15**) | On demand, **when nudged** (time or activity) + before a release / new runtime | `Workflow({name: "repo-audit", args: {scope: "full"}})` |
+| Full deep audit (all angles **the workflow implements** — 15 is NOT among them) | On demand, **when nudged** (time or activity) + before a release / new runtime | `Workflow({name: "repo-audit", args: {scope: "full"}})` |
 
 **No scheduled cron.** Execution is nudge-driven and on-demand, not automated — see
 the rationale under Freshness triggers.

@@ -5,7 +5,7 @@ Re-run to refresh: `python3 tools/validate/generate_open_items_index.py`
 
 ## Summary
 
-**181 total items** across 20 skills — **74 open**, 96 verified, 11 deferred
+**200 total items** across 23 skills — **77 open**, 109 verified, 14 deferred
 
 | Skill | Total | Open | Verified | Deferred |
 |---|---|---|---|---|
@@ -20,16 +20,19 @@ Re-run to refresh: `python3 tools/validate/generate_open_items_index.py`
 | ts-convert-from-snowflake-sv | 4 | **4** | 0 | 0 |
 | ts-convert-to-dbt | 18 | **4** | 13 | 1 |
 | ts-object-answer-promote | 4 | **4** | 0 | 0 |
+| ts-convert-from-tableau | 17 | **3** | 12 | 2 |
 | ts-load-source-data | 3 | **3** | 0 | 0 |
 | ts-publish-orgs | 8 | **3** | 4 | 1 |
 | ts-convert-from-sisense | 5 | **2** | 2 | 1 |
-| ts-convert-from-tableau | 17 | **2** | 12 | 3 |
+| ts-object-calendar-builder | 6 | **2** | 4 | 0 |
 | ts-convert-from-powerbi | 5 | **1** | 3 | 1 |
 | ts-security-columns | 6 | **1** | 5 | 0 |
 | ts-convert-from-databricks-mv | 1 | **0** | 0 | 1 |
 | ts-convert-to-snowflake-sv | 0 | **0** | 0 | 0 |
+| ts-link-semantic-layer | 5 | **0** | 1 | 4 |
 | ts-object-model-agentql-query | 6 | **0** | 6 | 0 |
-### Untagged (74 items)
+| ts-object-set-manager | 8 | **0** | 8 | 0 |
+### Untagged (77 items)
 
 Items without a `[needs: ...]` tag. Consider adding one to enable batch triage.
 
@@ -62,6 +65,7 @@ Items without a `[needs: ...]` tag. Consider adding one to enable batch triage.
 | ts-convert-from-snowflake-sv | #3 | Table-level synonyms | NOT IMPLEMENTED |
 | ts-convert-from-snowflake-sv | #4 | Private facts and metrics (`ACCESS_MODIFIER: PRIVATE`) | NOT IMPLEMENTED |
 | ts-convert-from-snowflake-sv | #5 | `unique_keys` declarations | NOT IMPLEMENTED |
+| ts-convert-from-tableau | #3 | COLLECTION datasources | OPEN |
 | ts-convert-from-tableau | #18 | CURRENCY / NUMBER answer_columns format sub-config | TO VERIFY |
 | ts-convert-from-tableau | #19 | `sorted by … descending/ascending` search token | TO VERIFY |
 | ts-convert-to-databricks-mv | #1 | Worksheet input is not supported | OPEN |
@@ -90,6 +94,8 @@ Items without a `[needs: ...]` tag. Consider adding one to enable batch triage.
 | ts-object-answer-promote | #3 | Bare display-name column references in Model formulas | OPEN |
 | ts-object-answer-promote | #4 | Answers embedded in Liveboards (not standalone objects) | OPEN |
 | ts-object-answer-promote | #5 | Sets (cohorts) in Answer TML | OPEN |
+| ts-object-calendar-builder | #2 | `generate-csv` unavailable on `se-thoughtspot` | OPEN |
+| ts-object-calendar-builder | #3 | `fiscal_year_number` default | OPEN |
 | ts-object-model-aggregates | #3 | Aggregate Model visibility | OPEN |
 | ts-object-model-aggregates | #4 | Non-additive measure routing | OPEN |
 | ts-object-model-aggregates | #5 | Cross-connection aggregates | OPEN |

@@ -72,6 +72,8 @@ are roughly ordered by value÷effort.
 | BL-204 | no plan-only helper for role-play alias synthesis -- Step 7.5 is done by hand | next converter pass |
 | ~~BL-199~~ | ~~`dependency.py`'s `_export_one` — same null-`edoc` crash BL-189 fixed, one call away~~ | DONE (2026-07-31) |
 | ~~BL-191~~ | ~~`dependency/mutate.py` reads Views through `column_id` (0/265 in the wild) — silent dangling refs~~ | DONE (2026-07-31) |
+| BL-277 | a join whose two sides live in different collections (Custom SQL view ↔ physical table) is dropped by both `model_tables` builders, so a correctly extracted join never reaches the Model TML | with the next Tableau build-layer pass |
+| BL-275 | `_extract_joins` drops joins with a nested equality expression or a Custom-SQL join side — extraction fixed; a Custom-SQL-to-physical-table join is still dropped by both `model_tables` builders, so no join reaches the TML | PARTIAL — see BL-277 |
 | BL-183 | Validator: dangling `[formula_X]` refs in `ts tml lint` + CA-JSON table refs | with BL-178 |
 | BL-174 | from-Databricks forward leg: `INNER` join type, dropped `format:`, stamped `cardinality:` | next DBX pass |
 | BL-180 | from-Snowflake translator ignores `\|\|`→`concat` and NULL-preserving division | next formula pass |
@@ -87,6 +89,9 @@ are roughly ordered by value÷effort.
 | BL-242 | fixed `PARTITION BY` silently dropped from every cumulative/moving window — YTD becomes a lifetime total | next formula pass, with BL-180 |
 | BL-243 | `with tag` folded into the metric expr — destroys all 5 metrics, `build-model` still exits 0 | next SF converter pass |
 | BL-244 | SV `variables` translate 8/8 / 0 skipped (false success), then fail at import and re-deploy | next SF converter pass, with BL-031 |
+| ~~BL-315~~ | ~~from-Databricks: a `range: current` + `offset:` window ordered by a raw date drops the offset silently — prior-year measures return this year's number~~ | DONE (2026-09-28) |
+| BL-322 | from-Databricks period comparisons (`range: current` + `offset:`) were translated to a row-lag that is right only at one grain and silently wrong elsewhere — now skipped by default; the correct date-shifted-join translation is not built | next DBX pass |
+| BL-323 | from-Snowflake window metrics: every framed window except the unbounded running total is mistranslated silently (frame size ignored; RANGE / FOLLOWING / default frames become grand totals), and no translated window can enforce the grain Snowflake requires | next SF formula pass, with BL-242 |
 
 ### Tier 2 — Schedule soon
 
@@ -109,6 +114,7 @@ are roughly ordered by value÷effort.
 | BL-186 | Live-verify the OSSIE-mapping TML property questions — **V3 closed; V1/V2 advanced. Three residuals: V1's sentinel question, V2's round-trip + `is_browser`, V4 in full** | next se-thoughtspot session |
 | ~~BL-189~~ | ~~`ts tml export --parse` crashes on a null `edoc` — ready-to-fix null guard~~ | DONE (2026-07-31) |
 | ~~BL-187~~ | ~~Live-verify the two contested OSSIE product-gap claims (G7, G13)~~ | DONE (2026-07-30) |
+| ~~BL-276~~ | ~~`_extract_joins` has no filter for object-graph-cached join duplicates~~ | DONE (2026-09-28, ts-cli v0.152.0) — fixed as a value dedup; the subtree exclusion this item proposed was disproven |
 | BL-184 | Worked-example reproducibility test (ground truth is never re-run) | after BL-178 |
 | BL-179 | from-Snowflake promotes the first synonym over the logical identifier | with BL-166 |
 | ~~BL-181~~ | ~~from-Snowflake classifies every fact `ATTRIBUTE` (no MEASURE branch)~~ | DONE (2026-07-31, ts-cli v0.128.0) — re-confirmed live 3× on 2026-09-08; coverage-matrix row 16 corrected then |
@@ -145,7 +151,7 @@ are roughly ordered by value÷effort.
 | BL-024 | Close row-offset table-calc gap with window functions | — |
 | BL-026 | ts-object-liveboard-builder skill | — |
 | BL-028 | Audit mode: assess visualization layer | — |
-| BL-094 | Joins between SQL Views (multi-query Custom SQL) | — |
+| BL-094 | Joins between SQL Views (multi-query Custom SQL) | PARTIAL — extraction + view↔view emission fixed 2026-08-07; cardinality inference open |
 | BL-233 | `ts profiles add` stamps `dbx_profile` for a CLI profile the skill no longer creates | next Databricks pass |
 | BL-238 | I15 is one-directional and Model-only; `check_tml.py` leaves worked-example descriptions ungated | next validator pass |
 | BL-245 | `build-sv` drops every Model formula without `--formulas`, and no command produces that file | next SF converter pass |
@@ -157,6 +163,55 @@ are roughly ordered by value÷effort.
 | BL-251 | `classify-columns` reports `SUM` for every raw measure regardless of declared aggregation — 7 of 7 | next `ts agentql` change |
 | BL-252 | `introspect` emits no `fqn`, so `build-model` collides on any generic table name (52 `DIM_PRODUCT` live) | next SF converter pass |
 | BL-253 | table alias dropped for the physical name — breaks every query citing the alias; masks BL-241 | next SF converter pass, before BL-241 |
+| BL-270 | datasource-root self-exclusion: `count_native_sets` returns 0 Sets and `extract_blends` returns `{}` on a `.tds` — third site fixed by #511 | next Tableau converter pass |
+| BL-278 | `_extract_noodle_joins` drops an AND-composite relationship and any whose operand lacks a `(Table)` suffix — 12 of 12 relationship joins lost across 5 real published datasources | next Tableau parser pass |
+| ~~BL-274~~ | ~~two PRs can ship the same ts-cli version with zero merge conflicts and every gate green — demonstrated on #511 vs #512~~ | DONE (2026-09-22) |
+| ~~BL-279~~ | ~~the same collision on backlog ids: `check_backlog_integrity` enforces uniqueness within a tree, not novelty against `main` — demonstrated on #484 vs #516~~ | DONE (2026-09-22) |
+| BL-280 | a clause-derived table name is never checked against the relation's own children, so a qualifier one level above the table resolves to a name no relation carries and the join is dropped with no warning | with BL-277 |
+| ~~BL-281~~ | ~~a `<relation join=...>` carrying no `<clause>` is dropped with no warning — the last `_extract_joins` exit with no diagnostic, in the function whose contract is to report what it skips~~ | DONE (2026-09-22) |
+| BL-282 | two DIFFERENT open items can share a `#N` inside one file with no gate — the novelty rule catches the cross-branch case, the within-file case is blocked by ts-audit's untagged verified/unverified double entries | next validator pass |
+| BL-285 | `check_i7_gate` checks the I7 marker is in the procedure body, not that it *precedes* the untranslatable classification step — finding 9.3 asked for "within N lines" of it; a gate in the wrong section still passes | next validator pass |
+| BL-286 | the Genie runtime's two converters (`agents/databricks/skills/ts-convert-*`) carry no I7 gate and are outside `_dirs`, so `check_i7_gate` cannot see them — audit 9.17 expected 9.3's fix to reach them | with the next Genie review |
+| BL-287 | CoCo `ts-convert-from-snowflake-sv` changelog claims its I7 gate "mirrors the CLI skill v1.5.0", but CLI v1.5.0 covered N1/I5 and never had the gate — the CLI got it for the first time in PR #525 (audit 9.2, second half) | next mirror pass |
+| BL-288 | `ts-object-model-coach` designs typed `model_instructions` categories (`exclusion_rules`, `aggregation_defaults`, …); one of its three candidate TML homes collides with the real free-text `data_model_instructions`. Consequence is **silent, not a type error**: `checks_ai` returns False and `tml_probes` returns `[]`, so a fully coached Model draws a HIGH-severity A3 "no coaching configured", loses A5's 25-point AI weight, and `find_ai_surface_uses` goes blind to every column named in those rules | before any v1.1 TML write path |
+| BL-289 | CSR is retrievable (`ts security column-rules export`) but **not walked** — `ts metadata report` declares `csr_hits` at `report/__init__.py:203`, passes it at `:307`, and never appends to it, so the dependency walk reports CSR as "Not Checked" by construction | next dependency pass |
+| BL-290 | four `open-item #N` citations in `tools/ts-cli/` docstrings point at ts-dependency-manager items deleted in 2026-06 (`dependency/mutate.py:448` #12, `report/tml_probes.py:14` #7, `:44` #6, `:75` #10 — the last self-annotates "resolved 2026-05-28"); `check_open_item_citations` scans skill dirs only, so nothing sees them | next validator pass |
+| BL-291 | `ts-object-model-coach`'s Step 8e gate defers the keyword-bearing reference-question tiers as unverified, but the verification happened (2026-04-27) and `references/question-taxonomy.md` marks `t1.top_n`, `t2.this_vs_last` and `t3.year_filter` ✅ Importable — the gate and a reference file in the same directory disagree about what the generator should emit | next model-coach pass |
+| ~~BL-292~~ | ~~`audit/checks_ai.py` read `instr.get("instructions")` off the RAW `ai/instructions/get` response, which has no such key, so the API half of A3/A5 never fired~~ | DONE (2026-09-22) |
+| BL-293 | `check_patterns` Checks 5-8 scan `*/SKILL.md` (Check 6 also scans `agents/shared/**/*.md`) but no skill-local `.py`, so a skill-local `.py` can carry a cloned `snowflake.connector.connect(` block (Check 7 / BL-079) or a `from ts_cli import …` (Check 8) with nothing looking. `check_no_inline_requests` was widened to `.py`; these four were not | next validator pass |
+| BL-294 | `ts-audit` open-item #7 still reads "Remaining: … wire the `--export-column-security-rules` flag into `ts tml export`" — half of that is now done (it is wired into `ts security column-rules export`, closing dep-manager #9). Decide whether `ts tml export` should carry it too, or whether CSR export stays on `ts security column-rules export` only — a general exporter taking a mechanism-specific option is a design call. Raised by audit 5.2, which closed the retrieval half and left this open | next ts-cli design pass |
+| BL-295 | `check_open_item_citations` has four known structural limits, none occupied today but all silent-wrong when they are: `owning_skill`'s 120-char window can bleed onto an unrelated skill name in either direction (fail-open or false-positive depending on which); `min(hits)` breaks an equal-distance tie lexicographically, so a name that is a substring of another resolves to the shorter; a `## Changelog` inside a code fence truncates `procedure_body` and leaves the rest of the file unscanned; and `.sh`/`.sql`/`.yaml`/`.tml` inside skill dirs, plus a skill's own `open-items.md`, are not scanned at all | next validator pass |
+| BL-296 | the physical Tableau join path asserts `left_table` = the MANY side from parse order, which carries no cardinality information — the sibling noodle path says so outright and infers MANY from CTE grain instead. Audit 17.1 proposed flipping the anchor from clause to child order; that swaps one arbitrary anchor for another, and child order cannot resolve a nested join at all | next Tableau parser pass |
+| ~~BL-297~~ | ~~27 of 51 ts-audit checks were imported by a test but never CALLED by one~~ | DONE (#530 — every check now has a test that trips it) |
+| BL-298 | the two sharing checks `ts-audit` advertises — S8 "Overly permissive sharing (FULL access to all users)" and S9 "Sharing to external groups" — **are not implemented anywhere**; grepping the audit module for `permission|shared_with|sharing|access_level` returns only those two description strings. The descriptions are corrected so reports stop mislabelling, but a security audit still silently omits sharing entirely | next ts-audit pass |
+| BL-307 | audit 9.1 — `ts-convert-from-looker` instructs `is_hidden: true` on every joined dimension PK (`step-6-model-joins.md:68`, SKILL.md:404, step-6:64/:132, step-5:264, coverage-matrix:36). **I11 says never set it during conversion**, and `thoughtspot-model-tml.md:243` repeats the prohibition. Every joined dimension's PK ships hidden, producing the locked-visualization and join-path failure I11 names. Remove the construct AND add an `is_hidden` rule to `tml_lint.py` under the CANONICAL-RULE-SET marker, which every converter already invokes | next converter pass |
+| BL-308 | audit 9.4 — `sisense/functions.py`'s `translate_agg` has **no live caller** (only a docstring mention), so `sisense-formula-translation.md` specifies a JAQL `agg` → TML `aggregation:` path the emitter never takes. The semantic mapping itself is correct and should NOT be changed (Sisense `count` is a distinct count, `dupcount` the exact total — corrected 2026-08-26, finding 14.3). Two exits needed: wire it or delete it, and if wired, note that `aggregation: COUNT_DISTINCT` on a `column_id`-backed entry silently flips MEASURE to ATTRIBUTE (I5) | next converter pass |
+| BL-309 | audit 9.5 — the CoCo `ts-convert-from-snowflake-sv` mirror carries **no I14 rule**: no role-play, alias-node or duplicate-join-pair guidance anywhere. The CLI primary added Step 7.5 plus a reference file at v1.20.0; CoCo has no `ts` CLI and executes the doc, so the rule must be prose there. An SV joining one fact to DIM_TIME on order date and ship date emits two joins on the same ordered pair and **the Model will not load** (observed at 21 joins across 7 pairs on a real customer SV). Also: `check_mirror_sync` collects only each ledger row's path and never compares the recorded CLI version against the actual one, so any SYNC-DEBT row acknowledges its mirror permanently | next mirror pass |
+| BL-310 | audit 9.6 — `model_builder.filter_unresolvable_formulas` computes the drop set to a fixpoint via `_cascade_drop_dependents`, and three sibling skills instruct the executor to do it **by hand, one hop deep**, with the identical sentence (from-qlik:92, from-powerbi:86, from-sisense:78). With C referencing B referencing rejected A, B is dropped and C survives carrying a dangling `[formula_B]` — an I13 violation and a hard 14516 rejection, or a dangling `formula_id` and an I1 silent drop. Expose the retry loop as a shared command or helper the three skills invoke. This is BL-217's remainder and the prior sweep's 11.4 | next converter pass |
+| BL-311 | audit 13.2 — `ts-object-model-coach` open-item #4 defers Data Model Instructions to v1.1 and ships manual copy-paste, but the write API exists: `setNLInstructions` (`POST /api/rest/2.0/ai/instructions/set`, Beta 10.15.0.cl), whose **read twin this repo already calls** at `audit/context.py:145`. Needs a `ts` command, then replace the paste step. Second-order: 26.8.0.cl `ai/memory/export`/`import` (Spotter memory) appears nowhere in `agents/` or `tools/`, so `ts-migrate-orgs` and `ts-publish-orgs` move models between Orgs and silently leave it behind | next ts-cli pass |
+| BL-312 | audit 6.2 — `ts_cli/powerbi/parsing.py` is 300 statements, **266 missed (11%)**; its test file is 1.8 KB and exercises two private helpers added reactively in a PR review. Every front-door parse path is untested, in the module a whole converter depends on | next testing pass |
+| ~~BL-306~~ | ~~the join checks are blind to the referencing join shape, whose condition lives in the Table TML's `joins_with[]`~~ | DONE (2026-09-24 — live-verified: 4 VARCHAR join keys now reported that two prior runs missed) |
+| ~~BL-299~~ | ~~`index_type` sense inverted in three checks (S2, P9, P11) — presence tested instead of value, so default-indexed PII was invisible and `DONT_INDEX` false-positived~~ | DONE (2026-09-23) |
+| ~~BL-300~~ | ~~`check_p17` cannot fire on any model the audit can see — it matches formula cross-references by display name; real TML refs are `formula_<name>` ids, and a display-name ref fails on first import~~ | DONE (2026-09-23) |
+| ~~BL-301~~ | ~~`check_h7` compares two disjoint GUID namespaces and is inverted — every healthy answer flagged, the direct-table answer it exists to find silently excused~~ | DONE (2026-09-23) |
+| ~~BL-302~~ | ~~`build_context` fetches dependents for models and tables only, so a SET guid is never a key and `check_h5` can never learn whether a set has consumers~~ | DONE (2026-10-02 — H5 discovers Sets through the shared per-Model cohort listing and reads their dependents as `LOGICAL_COLUMN`, with BL-324) |
+| ~~BL-303~~ | ~~`check_p5`'s date-constraint suppression is dead on real TML — `constraints` exports as a mapping, so iterating yields the key string~~ | DONE (2026-09-23) |
+| ~~BL-304~~ | ~~the data/perf check split was made by copying, not extracting: `d4`≡`p4`, `s9`≡`p14` verbatim, `s8` ⊇ `p15`, `_join_depth`≡`p7`, `_table_role` twice, `d1`'s column rule ≡ `p8`~~ | DONE (2026-09-22) |
+| ~~BL-305~~ | ~~alias blindness in `d6`/`d10`/`d11`/`s2`, and join findings reported with an empty `object_name`~~ | DONE (2026-09-23) |
+| BL-283 | `check-catalog.md` and the audit `check_id`s can drift with nothing to notice — 51 documented vs 50 emitted today, and the deferred-id table means a naive comparison is wrong | next validator pass |
+| ~~BL-316~~ | ~~from-Databricks translator gaps found converting a 136-measure budget/forecast MV — 88 needed hand authoring; two ThoughtSpot window limits to document~~ | DONE (2026-09-28) |
+| BL-317 | `IN`/`NOT IN` and share-of-total have 2–3 ThoughtSpot spellings across converters; the DBX to-direction `in(…)` row is one the catalog says fails import | next converter-parity pass |
+| BL-318 | Re-running a converter (or `ts-link-*`) discards ThoughtSpot-side edits — detect existing objects, diff TS-side changes, prompt keep/discard | next converter pass |
+| BL-319 | CLI SV Mode C promises deep-copy + KEEP/MERGE but `build-model --existing-guid` regenerates from the SV — overwrites TS-side edits | next SF converter edit |
+| BL-320 | Databricks type map lacks `timestamp_ltz` (and other converters' LTZ/TZ variants) | with BL-130 |
+| BL-321 | `ts-link-*` family + `ts-link-semantic-layer` — v1 shipped; open items #2–#5 remain (Honeydew/Cube/Kyvos metadata + aggregation mode) | with platform access |
+| ~~BL-324~~ | ~~A Model's v2 dependents do not list its Sets (no `COHORT` bucket, live 2026-09-30) — `ts-audit` Set discovery finds nothing, so H5 cannot fire even with BL-302 fixed~~ | DONE (2026-10-02 — with ts-object-set-manager v1) |
+| BL-325 | `ts migrate scan-sets` misses Sets whose `metadata_header.type` is blank (2 of 3 live) and its one cluster-wide `LOGICAL_COLUMN` search times out — the Org-migration gate can report a Set-blocked Model clean | **Done for `scan-sets` and `apply` 2026-10-02; remains: `publish_planning._cohort_columns` still matches by `type` prefix** | next ts-publish pass |
+| BL-326 | Set MODIFY granted via API without access to the Set's Model fails on save with a generic error; the API accepts and reads back a grant that cannot work — **parked by the user** | parked |
+| BL-327 | ts-object-set-manager v2 — act on the v1 report: delete `REVIEW_DELETE` Sets, convert `CANDIDATE_*` to answer-/viz-level, revoke `UNEXPLAINED` grants | fast follow to v1 |
+| BL-328 | ts-object-set-manager connection scope (connection → tables → Models) — **parked** | parked |
+| BL-329 | Audit H angle runs Set discovery through `fetch_consumers`, which exports every Liveboard that uses a Set — Liveboard detail H5 never reads; slow on large estates. Add a lightweight consumers mode | next ts-audit pass |
+| BL-330 | `ts migrate apply --sets-scan FILE` trusts any post-BL-325 scan for any Model — nothing checks the scan covered the mapped Model or the source Org; a scan of another Org (or `scanned.models: 0`) lets `apply` pass an uninspected Model | next ts-migrate pass |
 
 ### Tier 3 — Opportunistic
 
@@ -195,13 +250,20 @@ are roughly ordered by value÷effort.
 | BL-231 | `check_backlog_integrity.py` passes on a structurally destroyed backlog — proven, not theorised | next validator pass |
 | BL-234 | `thoughtspot-model-tml.md` lists `NONE` as a valid aggregation; platform rejects it (14528) | next TS currency sweep |
 | BL-235 | passthrough arity self-verifies; residual is now cross-repo only, since the shipped converter generates its docs from the catalog | opportunistic |
-| BL-254 | `parse-sv` never parses `ai_sql_generation` — the regex requires an `=` the syntax does not have | next SF converter pass |
-| BL-255 | `_extract_clause` scans raw DDL, so comment text swallows a real clause (4th instance of one cause) | next SF converter pass, with BL-254 |
+| ~~BL-254~~ | ~~`parse-sv` never parses `ai_sql_generation` — the regex requires an `=` the syntax does not have~~ | DONE (2026-09-15) |
+| ~~BL-268~~ | ~~top-level `comment` dropped on every SV carrying verified queries — `ai_verified_queries` sat in the comment-search block list~~ | DONE (2026-09-15) |
+| BL-255 | `_extract_clause` scans raw DDL, so comment text swallows a real clause (4th instance of one cause) — partially mitigated by BL-268; the `_extract_clause` half is untouched | next SF converter pass |
 | BL-256 | per-column descriptions lost on the return leg; Model-level description survives | next SF converter pass |
 | BL-257 | `build-sv` has no `facts()` emitter — a fact block cannot survive a round trip | with BL-031 |
 | BL-258 | two `parse-sv` defects on the hand-written-DDL path (implicit `references T`; comment-preceded metric) | with BL-248 and BL-255 |
 | BL-259 | `sv_build_model.py:43` stamps `aggregation: SUM` on an already-aggregated formula — **question unresolved** | next SF converter pass |
 | BL-260 | `PARTITION BY EXCLUDING` maps to nothing on a qualified reference; `LAG`/`LEAD` unrecorded | next formula pass, with BL-242 |
+| BL-269 | `build_blend_plan` disagrees with its own previous run on identical input — weakens the corpus-diff regression instrument | next Tableau converter pass |
+| BL-271 | table-calc warnings name entries that are not in the output they describe (last-wins keys vs per-occurrence warnings) | next Tableau converter pass |
+| BL-272 | five mutually inconsistent handlings of "non-numeric token in TWB XML"; degradation channel exists in one extractor of six | next Tableau converter pass |
+| BL-284 | a physical table and a SQL View sharing one relation name in one datasource are not fully separable from the parsed representation — `_sql_view_owns_column` is a conservative heuristic, undecidable when both declare the same column name; not present in the corpus | next Tableau converter pass |
+| BL-313 | MERGE mode skips SQL View disambiguation, so merging into a model that GENERATE built with this CLI emits the bare name where the target expects the qualified one | next Tableau converter pass |
+| BL-314 | nothing tells an author that a deliberate parse→TML transformation must also be declared to `tableau/verify.py`; three PRs have broken the fidelity gate the same way and the rule is prose in CLAUDE.md, not a check | next validator pass |
 
 ### Tier 4 — Deferred
 
@@ -227,6 +289,7 @@ are roughly ordered by value÷effort.
 | BL-237 | two sites still classify `data_panel_column_groups` as a `properties` key | next Snowflake pass |
 | BL-239 | `ts-from-databricks-rules.md` TML templates put nested keys at the column root | next Databricks pass |
 | BL-261 | `build-sv --help` cites `ts tml export --output-dir`, which does not exist | next `commands/snowflake.py` change |
+| ~~BL-273~~ | ~~`tools/ts-cli/CLAUDE.md:153` asserts `Current version: 0.135.0`; package is at 0.139.0 and nothing gates the line~~ | DONE (2026-09-22) |
 
 ---
 
@@ -1196,6 +1259,29 @@ requiring `CAN_USE_SPOTTER` + `SPOTTER_COACHING_PRIVILEGE`.
 2. Add a `ts` command wrapping set/get; replace the manual-paste fallback in model-coach Step 6.5/8b/9a.
 3. Re-frame `model-instructions-schema.md` "Where it lives in TML" around the API (scope `GLOBAL` only today), not a TML round-trip — re-validate the round-trip assumption before any v1.1 TML work.
 4. Add a model-level instructions note to `thoughtspot-model-tml.md` once the API-vs-TML question is settled (`tml_probes.py:129` already reads `model.model_instructions.data_model_instructions`).
+
+### Live probe 2026-09-28 (approach step 1 done)
+
+On `nebula-ts-semview` (DBX Org), Model `3fee09f8-35a8-49cd-8a84-777b83d694a6`:
+
+| Path | Result |
+|---|---|
+| TML import with `model.model_instructions.data_model_instructions` | Import `OK`, but **not persisted** — `ai/instructions/get` returns `{"nl_instructions_info":[]}` |
+| `POST ai/instructions/set` `{data_source_identifier, nl_instructions_info:[{instructions:[text], scope:"GLOBAL"}]}` | `{"success":true}` HTTP 200; `get` returns the text |
+| TML export after a successful API `set` | `model_instructions` **absent** — TML is neither a write nor a read path on this build |
+
+Consequences: `tml_probes.py:129` and `audit/checks_ai.py` read a TML field that does not
+carry the value here — only `audit/context.py:231` (API `get`) sees it. Whether `set`
+replaces or appends is **unverified** — assume replace, so any writer must `get` and merge first.
+
+### Scope widened: converters and `ts-link-*` also need the write
+
+No converter writes instructions today. Snowflake SV `ai_sql_generation` /
+`ai_question_categorization` is parsed (`sv_parse.py:908-936`) and dropped by
+`build_model_tml_sv`; a Databricks MV top-level `comment:` carrying Spotter guidance lands
+only in `model.description`. The `ts` command this item adds (overlaps BL-311's
+`setNLInstructions` wrapper — do it once) should be called from both from-converters and
+from `ts-link-semantic-layer`, behind the BL-318 keep/discard check.
 
 **Target:** 2026-09-30.
 
@@ -2778,18 +2864,39 @@ NEEDS-REVIEW flag pointing at the token. Currently the SQL is passed through ver
 
 ---
 
-## BL-094 — Tableau: capture joins BETWEEN SQL Views (multi-query Custom SQL datasources) `Tier 2`
+## BL-094 — Tableau: capture joins BETWEEN SQL Views (multi-query Custom SQL datasources) `Tier 2` — **PARTIAL: extraction + view↔view emission fixed 2026-08-07, cardinality inference open**
 
 **Source:** 2026-07-06 PR #188, validated against `tableau/community-tableau-server-insights` ts_users.twb (6 joined Custom SQL Queries).
 **Affects:** ts-convert-from-tableau, `build-model` (`_extract_joins` / model join wiring).
-**Status:** OPEN.
+**Status:** PARTIAL — see the status correction below.
 
-`_extract_joins` reads only `relation[@type='table']` children, so a datasource that JOINS
+~~`_extract_joins` reads only `relation[@type='table']` children, so a datasource that JOINS
 several Custom SQL Queries (each now a SQL View) loses the joins between them — the model gets
-the SQL Views as unconnected `model_tables[]` with no `joins`. Needs join extraction over
+the SQL Views as unconnected `model_tables[]` with no `joins`.~~ Needs join extraction over
 `type='text'` relation children plus cardinality inference (deterministic only via a data probe;
 CTE-grain heuristic otherwise). This is the multi-query analogue of the single-view case shipped
 in #188 and overlaps the deferred "logical-relationship → join cardinality" gap.
+
+**Status correction (2026-09-21, SCAL-330635 review).** The struck sentence above is no longer
+true. BL-275 widened the join-side lookup to accept `type='text'`
+(`joins.py::_join_sides`), so a join between two Custom SQL Queries is now extracted; and
+`_sql_view_model_tables` (`model_builder.py:98`) already emitted view-to-view joins, so no
+second fix was needed on the emission side. Verified end to end — extraction through
+`model_tables[]` — producing `on: "[Query A::UserId] = [Query B::UserId]"` with
+`cardinality: MANY_TO_ONE`.
+
+**That verification used a constructed two-view fixture, not a real workbook.**
+`ts_users.twb` (this item's own 6-join source) has **not** been re-run, so the multi-query
+case at real arity is unconfirmed. Re-running it is the natural first step when this item is
+picked up.
+
+What remains is **cardinality inference**: the emitted join hardcodes `MANY_TO_ONE` and
+nothing infers the true cardinality. That is this item's park-note blocker and is unchanged
+by the above.
+
+A join with one SQL View side and one physical-table side is a **different** case — extracted
+correctly, then dropped, because both `model_tables` builders require both sides in the same
+collection. That is **BL-277**, not this item.
 
 **Park note (2026-07-23):** deferred; needs a cardinality-inference design decision (data-probe
 vs. CTE-grain heuristic, per this item's own text) before implementation can start.
@@ -7197,6 +7304,43 @@ the column as a starting point, and a labelled snapshot is more useful than noth
 
 ---
 
+## BL-285 — the I7 gate checks presence, not position `Tier 2`
+
+**Filed:** 2026-09-22 while routing audit finding 9.3 (PR #525).
+**Affects:** `tools/validate/check_i7_gate.py`.
+
+9.3's prescribed outcome was to "assert the marker appears **within N lines of** an
+untranslatable/skipped classification step in every `ts-convert-*` SKILL.md". The shipped
+validator asserts presence in the procedure body (the `## Changelog` tail is excluded) and
+no more, because converters word that step too differently — `skipped[]`, `unsupported[]`,
+"NEEDS REVIEW", "could not translate" — for a regex to locate it without itself failing
+open, which would be the very class of defect this sweep was about.
+
+The docstring and failure message now say so explicitly rather than implying an ordering
+guarantee. Closing this means finding a position rule that is not itself fail-open; a
+plausible route is requiring the gate before the first occurrence of any term in a
+maintained signal list, and failing loudly when a converter matches none of them.
+
+---
+
+## BL-286 — the Genie runtime's converters are ungated for I7 `Tier 2`
+
+**Filed:** 2026-09-22 while routing audit finding 9.3 (PR #525).
+**Affects:** `agents/databricks/skills/ts-convert-from-databricks-mv`,
+`agents/databricks/skills/ts-convert-to-databricks-mv`.
+
+`check_i7_gate` scopes to `_dirs.ALL_RUNTIMES`, which deliberately excludes
+`agents/databricks/` (`.claude/rules/runtime-coverage.md`: that runtime sits outside the
+mirror/coverage tooling by design). So both Genie converters are unreached — and
+`ts-convert-to-databricks-mv/SKILL.md:149` lists untranslatable formulas with no gate.
+
+Audit finding 9.17 recorded these as "No action beyond 9.3", which assumed 9.3's fix would
+reach them. It does not. Either bring the Genie skills into a gate of their own or record
+in `runtime-coverage.md` that I7 is a manual review there — the point is that the
+assumption is now written down instead of inherited.
+
+---
+
 ## BL-200 -- SV DDL entry splitter is not quote aware, so a comma in `comment=` shatters the entry `Tier 1`
 
 **Filed:** 2026-07-31.
@@ -8272,6 +8416,12 @@ detection one.
    refs are nested under a wrapping `<expression op='='>` is unproven. If they are,
    `_extract_joins` drops `=` physical joins too and the blast radius is larger than step 2
    assumes.
+
+**Scope note.** `_extract_noodle_joins` also drops relationships whose operators are all
+`=`, for reasons unrelated to this item's premise. Those shapes are **BL-278**; keep them
+there rather than restating them here. Step 2's warnings work overlaps both items — since
+SCAL-330635, `_extract_joins` carries `(joins, warnings)` through `parse_twb` as
+`join_warnings`, which is the plumbing that extractor still lacks.
 
 **Park note.** The Tableau converter was parked 2026-07-23. Steps 1–2 are small enough to
 fold into any Tableau touch; step 3 waits for the next real Tableau pass.
@@ -9534,7 +9684,8 @@ outbound-leg finding.
 **Source:** the round-trip fidelity study — `docs/reviews/2026-09-08-sv-patterns-roundtrip-fidelity.md`
 (synthesis). Independently hit by all four run groups and the pilot. Raw captures at
 `.svrt/work/*/rt.sql`, `rtf.sql`, `*_exec.err` (**`.svrt/` is gitignored**).
-**Affects:** `tools/ts-cli/ts_cli/snowflake_ops.py` (`build-sv` dimension + metric emitters),
+**Affects:** `tools/ts-cli/ts_cli/sv_build_sv.py` (`build_sv_ddl` / `_classify_formula_column` —
+the `build-sv` dimension + metric emitters),
 `agents/cli/ts-convert-to-snowflake-sv/references/coverage-matrix.md` rows 13/18/20/21.
 **Status:** OPEN.
 
@@ -9887,9 +10038,14 @@ The information is present in the parsed input; nothing needs to be inferred.
 **Source:** the round-trip fidelity study — `docs/reviews/2026-09-08-sv-patterns-roundtrip-fidelity.md`
 (the `ai_metadata` per-pattern section). Raw captures at `.svrt/work/ai_metadata/parsed.json`
 (**`.svrt/` is gitignored**).
-**Affects:** `tools/ts-cli/ts_cli/sv_parse.py` (`_AI_SQL_GEN_RE`, line 118),
+**Affects:** `tools/ts-cli/ts_cli/sv_parse.py` (`_AI_SQL_GEN_RE`, line 122 after the fix),
 `agents/cli/ts-convert-from-snowflake-sv/references/coverage-matrix.md` L1.
-**Status:** OPEN.
+**Status:** DONE (2026-09-15, ts-cli v0.138.0) — `=` made optional in **both** regexes;
+`_AI_QUESTION_CAT_RE` did carry the same defect, as this item predicted. Confirmed against
+Snowflake first: the `=` form is not merely absent from `GET_DDL`, it is **rejected**
+(`syntax error ... unexpected '='`), so the pattern was unmatchable by construction rather
+than merely unlucky. Re-found independently on 2026-09-14 converting a live customer SV,
+which lost its entire 1,923-character instruction block silently.
 
 `_AI_SQL_GEN_RE = r"\bai_sql_generation\s*=\s*'"` requires an `=`. Snowflake's syntax has
 none — `GET_DDL` round-trips the clause verbatim without one. **The clause therefore never
@@ -9911,6 +10067,57 @@ rather than hand-written DDL — the study's recurring lesson is that hand-writt
 agree with the parser's assumptions and live output does not.
 
 **Target:** next Snowflake converter pass.
+
+## BL-268 — the top-level `comment` is dropped on every Semantic View carrying verified queries `Tier 3`
+
+**Filed:** 2026-09-15. **Status:** DONE (2026-09-15, ts-cli v0.138.0) — filed and fixed together.
+**Source:** converting a live customer Semantic View (`SV_COMPLAINTS_NO_BRIDGE`, a two-fact
+complaints/procedures model with 7 verified queries) into a ThoughtSpot Model.
+**Affects:** `tools/ts-cli/ts_cli/sv_parse.py` (`_extract_top_level_comment`),
+`agents/cli/ts-convert-from-snowflake-sv/references/coverage-matrix.md` row 6.
+
+`_extract_top_level_comment` listed `ai_verified_queries` in `block_kws` — the clauses the
+top-level `comment=` is assumed to come *after*. It does not. **Snowflake requires the
+comment to come before it**, and rejects the reverse order outright; the accepted order is
+`comment` → `ai_sql_generation` → `ai_verified_queries`, with the verified-queries block
+strictly last. So on any view that has one, the search window opened past the comment and
+the function returned `None`.
+
+Silent in the way that matters: `parse-sv` exits 0 with `unsupported: []` and `warnings: []`,
+`build-model` reports `lint_findings: []`, and the Model imports fine — carrying only the
+converter's own `"Converted from Snowflake Semantic View ..."` boilerplate as its entire
+description. The business description a Cortex Analyst model leads with is simply gone, and
+nothing downstream re-raises it.
+
+**Distinct from BL-255 / study finding N2, which is still open.** N2 records that
+`_extract_top_level_comment` "uses the same raw scan and lands past the real `comment=`" —
+that is the *raw-scan* mechanism, where a `comment=` string whose own text contains a clause
+name followed by `(` is matched as the clause opener. This is a second, independent
+mechanism that needs no such text: the fixture added with this fix comments
+`'Order analytics across channels'` — no clause name, no parenthesis — and still lost it.
+Either one alone is fatal, so fixing N2 would not have closed this.
+
+**It does, however, partially mitigate N2 — recorded here so BL-255 is not read as untouched.**
+N2's named `_extract_top_level_comment` symptom for the `ai_verified_queries` keyword is gone:
+the study's own `ai_metadata` reproduction (a `comment=` whose text contains
+`AI_VERIFIED_QUERIES (pre-approved SQL for common questions)`) now returns its comment where it
+previously returned `None`, so study row 30's recorded outcome no longer holds. What is NOT fixed,
+and keeps BL-255 open: `_extract_clause` still scans raw DDL — it still returns
+`'pre-approved SQL for common questions'` as the verified-queries clause — and a comment containing
+any OTHER clause name plus `(` (`facts (`, `tables (`) still defeats `_extract_top_level_comment`.
+
+**Fix.** Move `ai_verified_queries` out of `block_kws` and into `boundary_patterns`, where
+the other post-comment clauses (`with extension`, `ai_sql_generation`,
+`ai_question_categorization`) already sit — it bounds the comment search rather than
+extending it. Regression test `TestComment::test_survives_a_trailing_ai_verified_queries_block`
+pins Snowflake's real clause order; it fails against the previous parser.
+
+**The generalisable lesson**, and the reason this sat undetected: the clause *order* is
+load-bearing and was never encoded anywhere. No fixture carried `comment` and
+`ai_verified_queries` together, so the ordering assumption baked into `block_kws` was never
+contradicted. It is the same shape as BL-254 in the same file — an assumption about
+Snowflake's syntax that the test suite confirmed instead of checking.
+
 
 ## BL-255 — `_extract_clause` scans raw DDL against its own docstring's contract, so comment text swallows a real clause `Tier 3`
 
@@ -10438,3 +10645,1606 @@ metrics) before it carries any of its funnel — 6 of its 9 metrics were already
 
 **Target:** next from-direction converter pass — take with BL-262; both are angle-15
 preconditions and this one is the cheaper.
+
+
+## BL-269 — `build_blend_plan` disagrees with its own previous run on identical input `Tier 3`
+
+**Filed:** 2026-09-16.
+**Source:** review of PR #511 (SCAL-338450). The PR body records this defect and states it is
+"left to its own item" — no such item existed. Filed here so the promised exit is real.
+**Affects:** `tools/ts-cli/ts_cli/tableau/twb.py` (`build_blend_plan`).
+
+The 33-workbook regression diff run for PR #511 produced one apparent difference that the PR's
+change cannot explain: **Hourly Sales Flash**. The old code disagrees with *its own* previous
+run on the same input — same members, different order — so the diff is not old-vs-new at all.
+Non-determinism in `build_blend_plan`, almost certainly set or dict iteration feeding an
+ordered output structure.
+
+**Why it matters more than cosmetics.** It is load-bearing for exactly the technique PR #511
+used to earn its confidence: "run old and new over the corpus and diff the outputs" is the
+repo's strongest regression instrument for the Tableau converter, and every future use of it
+has to hand-wave one file. A reviewer cannot tell a real regression in that file from the
+noise, which means the instrument is silently weaker than it reads. It also makes any
+`parse` output diff-based review — by a human or an agent — unreliable for blended workbooks.
+
+**Approach.** Find the unordered container (candidates: a `set` of blend members, or dict
+iteration over datasource captions) and sort at the boundary where the plan is built, not at
+the point of comparison — a sort in the test would hide it rather than fix it. Then re-run the
+corpus diff old-vs-old to confirm the file is stable before trusting it old-vs-new. A cheap
+gate: parse one blended workbook twice in the same test and assert the two outputs are equal.
+
+**Target:** next Tableau converter pass — take before the next corpus-diff regression run,
+since that run's evidentiary value depends on it.
+
+
+## BL-270 — the datasource-root self-exclusion: two sites left after #511 `Tier 2`
+
+**Filed:** 2026-09-16. **Partially resolved** 2026-09-17 (PR #511, ts-cli v0.140.0) — the
+`extract_table_calc_addressing` site is fixed; **two sites remain open**.
+**Source:** review of PR #511 (SCAL-338450); the defect predates that PR.
+**Affects:** `tools/ts-cli/ts_cli/tableau/set_extract.py` (`count_native_sets`),
+`tools/ts-cli/ts_cli/tableau/twb.py` (`extract_blends`).
+
+A standalone `.tds`/`.tdsx` root **is** the `<datasource>` element, so any XPath of the form
+`.//datasource...` cannot match it — the tree excludes itself from its own search.
+`parse_cmd` advertises `.tds/.tdsx published-datasource file` and `load_xml_root` handles it,
+so these inputs are supported and reached, and degrade silently rather than erroring.
+
+`datasource_elements()` (`twb.py:42`) exists for exactly this and its docstring names the trap
+verbatim — "a standalone `.tds`/`.tdsx` root **is** the `<datasource>` itself (`.//datasource`
+would not match it)". `parse_twb` uses it correctly. The sites below do not.
+
+**State of the three sites, re-verified against `main` at v0.140.0:**
+
+| Site | `.tds` root | Status |
+|---|---|---|
+| `extract_table_calc_addressing` (`twb.py`) | populated | **FIXED** — PR #511 moved it to `datasource_elements(root)`, which also let each warning name its datasource |
+| `count_native_sets` (`set_extract.py:49`) | **0 native Sets** | open — scans `.//datasource//group` |
+| `extract_blends` (`twb.py:268`) | **`{}`** | open — builds `fed_to_caption` from `root.findall(".//datasource")` |
+
+**`extract_blends` is the subtler of the two.** Its early return on a missing
+`<datasource-relationships>` looks like protection and is not: a datasource-rooted tree that
+*does* carry relationships gets past the guard, finds no datasources to build `fed_to_caption`
+from, and still returns `{}`. Confirmed by execution on `main`. Treat the early return as a
+coincidence.
+
+**Silent in the way that matters:** `parse` exits 0, writes the output file, and emits an
+empty result indistinguishable from a datasource that genuinely has no Sets and no blends.
+Nothing downstream re-raises it.
+
+**Priority changed 2026-09-17 (SCAL-331323) — these sites are now reachable, not latent.**
+Until that PR a `.tds` produced no datasources at all, so neither site could be hit on the
+shape they fail for. It parses now, and `count_native_sets` immediately contradicts the
+same output it appears in: on a `.tds` carrying one Set, `sets_detected` is `0` while
+`datasources[0]["sets"]` lists it — and `commands/tableau.py:1386` gates the cohort nudge
+on `sets_detected > 0`, so the user is not told. The conversion itself is unaffected; it
+reads the per-datasource `sets`. `extract_blends`'s name lookup was converted to
+`datasource_name()` in that PR, but its `.//datasource` scan — the defect this item is
+about — was not. `tools/ts-cli/README.md` now documents `sets_detected` as counting native
+Sets, which is false on a `.tds` until this is fixed.
+
+**What PR #511 settled, and what it did not.** #511 verified its crash fix across a
+33-workbook corpus. That corpus is workbooks, so it never exercised the `.tds` path at all —
+the corpus evidence still does not extend to published datasources, and should not be cited
+as if it does. The fix to the third site was reasoned from the XPath, not from the corpus.
+
+**Approach.** Same shape for both: iterate `datasource_elements(root)` and search within each,
+rather than searching for a descendant `<datasource>`. Add a `.tds`-rooted fixture for each —
+there is still none for `count_native_sets` or `extract_blends`, which is why a docstring that
+names the trap has sat beside code falling into it. Worth a sweep for any other
+`.//datasource` XPath at the same time; three were found by reading, and the count was wrong
+once already (`extract_blends` was first recorded as unaffected, then shown otherwise by
+execution).
+
+**Target:** next Tableau converter pass.
+
+
+## BL-271 — table-calc warnings name entries that are not in the output they describe `Tier 3`
+
+**Filed:** 2026-09-16.
+**Source:** review of PR #511 (SCAL-338450). The last-wins keying predates that PR; the
+*disagreement* between the warnings and the JSON is new with it.
+**Affects:** `tools/ts-cli/ts_cli/tableau/twb.py` (`extract_table_calc_addressing`).
+
+Both maps are keyed on an identifier that is not unique, so entries overwrite each other
+last-wins, while the warning list added by PR #511 appends once per *occurrence*. The two
+surfaces then contradict each other, and SKILL.md Step 3f reads both.
+
+**Confirmed by execution, two independent cases:**
+
+1. `column_level` is keyed on the calc id alone. Datasource `a` holding `[Calculation_1]` with
+   `<address><value>false</value>` and datasource `b` holding `[Calculation_1]` with
+   `<value>-1</value>` yields `column_level["[Calculation_1]"]["address_offset"] == -1` **and** a
+   warning saying an offset was skipped for `[Calculation_1]`. The degraded entry is gone; the
+   surviving entry is not the one the warning describes. Not contrived — SKILL.md Step 3g
+   documents copied/cloned datasources that "inherit all calculated fields from the original",
+   i.e. duplicate `[Calculation_NNN]` ids, as a routine shape.
+2. `ws_overrides[ws_name]` is keyed on the `<column-instance>` `column` attribute, which repeats
+   within a worksheet — Tableau writes one instance per derivation (`[sum:cost:qk]`,
+   `[usr:cost:qk]`, …) all carrying the same `column`. Two such instances, both with a
+   non-numeric address, give `len(warnings) == 2` and exactly **one** surviving entry. On a
+   large workbook this also multiplies the stderr echo by the derivation count.
+
+Neither warning's context string carries enough to disambiguate: case 1 has no datasource,
+case 2 has no instance name.
+
+**Worse than order-independent loss: document order decides which value survives, and the
+warning is byte-identical either way.** Confirmed by running case 1 in both orders —
+
+| Document order | `address_offset` | Warning emitted |
+|---|---|---|
+| `false` first, `-1` second | `-1` (good value survives) | `column '[Calculation_1]': ... 'false' ... skipped` |
+| `-1` first, `false` second | `None` (good value destroyed) | *byte-identical to the row above* |
+
+So the same warning text describes both "your offset is intact" and "your offset is gone",
+and which one a workbook gets is decided by the order Tableau happened to serialize its
+datasources in. A reader cannot tell the two apart from the output, and no test pins either.
+
+**Degenerate case, same function.** A `<worksheet>` with no `name` attribute keys
+`ws_overrides` under Python `None` — serialized as the JSON key `"null"`, which Step 3f's
+`ws_overrides[W][calc_id]` lookup can never hit — and renders the warning as the literal text
+`worksheet None`.
+
+**Approach.** Key `column_level` on `(datasource, col_name)` and `ws_overrides` on the
+instance `name` rather than the `column` attribute, or at minimum widen both context strings
+so the warnings are distinguishable even while the keys collide. Skip worksheets with no name
+rather than keying on `None`. A test that asserts `len(warnings) == len(degraded entries)`
+pins the invariant that is currently violated.
+
+**Target:** next Tableau converter pass — take with BL-272, same function, same read.
+
+
+## BL-272 — five different answers to "non-numeric token in TWB XML", none of them shared `Tier 3`
+
+**Filed:** 2026-09-16.
+**Source:** review of PR #511 (SCAL-338450), which added the fifth.
+**Affects:** `tools/ts-cli/ts_cli/tableau/` — `twb.py`, `dashboards.py`, `set_extract.py`,
+`sets.py`.
+
+The same problem — Tableau writes a token where the parser expects an integer — is now handled
+five mutually inconsistent ways in one package:
+
+| Site | Handling | On a bad token |
+|---|---|---|
+| `dashboards.py:63` | `count.isdigit()` pre-check | silently skips (and nulls legitimate negatives) |
+| `dashboards.py:159` | `try`/`except (TypeError, ValueError)` | returns `None` for the whole tile |
+| `set_extract.py:237` | `try`/`except ValueError` | keeps the **raw string** |
+| `sets.py:64` | `try`/`except (TypeError, ValueError)` | keeps the **raw value** |
+| `twb.py` `_read_table_calc` (PR #511) | `try`/`except ValueError` | drops to `None`, plus a warnings list bolted onto one extractor |
+
+PR #511's choice is right for its site and its reasoning is sound — `.isdigit()` is False for
+negative offsets, and every numeric address in the 33-workbook corpus is negative, so an
+isdigit pre-check there would have silently nulled 26 working values across 4 workbooks to
+stop a loud crash in 2. That is the correct local call. The cost is structural: the next TWB
+token crash gets a sixth ad-hoc answer, nobody can predict what any of the five do, and
+`dashboards.py:63` is still running the approach PR #511's own docstring argues against.
+
+**The degradation channel has the same problem.** PR #511 threads a `warnings` list through
+one extractor, so a degradation in `extract_table_calc_addressing` is reported and an
+identical degradation in `extract_blends`, `detect_orphan_calcs`, `build_blend_plan` or
+`extract_dashboards` is not — reported or unreported according to which one happened to crash
+a customer, not according to what was lost.
+
+**Approach.** One `_safe_int(text) -> int | None` helper that keeps the raw token alongside the
+parsed value, and a single degradations channel threaded through all six `parse_cmd`
+extractors so any degradation surfaces the same way. Migrate `dashboards.py:63` off `.isdigit()`
+in the same pass — note it is a behaviour change there (negatives start parsing), so it needs
+its own corpus diff rather than being folded in blind.
+
+**Target:** next Tableau converter pass — take with BL-271.
+
+
+## BL-273 — `tools/ts-cli/CLAUDE.md` asserts a version it has not tracked for four releases `Tier 4` -- **RESOLVED 2026-09-22**
+
+**Filed:** 2026-09-16.
+**Source:** review of PR #511 (SCAL-338450); drift predates that PR.
+**Affects:** `tools/ts-cli/CLAUDE.md:153`, `tools/validate/check_version_sync.py`.
+
+Line 153 reads `Current version: **0.135.0**. Run ...check_version_sync.py to verify.` — the
+package is at 0.139.0. The file is loaded at the start of every session working in
+`tools/ts-cli/`, so the stale number is read as current by every such session, and the
+sentence pointing at the verification script makes it look gated when it is not:
+`check_version_sync.py` compares `__init__.py` against `pyproject.toml` and never looks at
+this line. The "Adding a command" / "Adding an audit check" checklists in the same file say
+only "bump version in both `__init__.py` and `pyproject.toml`", so nothing prompts the edit.
+
+**Approach.** Prefer deleting the number over updating it — a hand-maintained copy of a value
+that is already gated in two other files is drift waiting to happen again, and the useful half
+of the sentence is the pointer to `check_version_sync.py`. If the number is wanted, extend
+`check_version_sync.py` to cover this line so it is gated rather than asserted.
+
+**Target:** next ts-cli version bump — whoever touches the version next.
+
+
+**Resolved 2026-09-22, by deletion — this item's stated preference.** The number is gone from
+`tools/ts-cli/CLAUDE.md`; the pointer to `check_version_sync.py` stayed, and the section now
+also states the novelty requirement BL-274's gate enforces, plus the `--base origin/main`
+invocation CI uses. The "Adding a command" and "Adding an audit check" checklists said only
+"bump version in both files" — still true but no longer sufficient — so both now say "to an
+unreleased number".
+
+Gating the line was the alternative this item offered, and was rejected for the reason the
+item gives: a hand-maintained copy of a value already gated in two files is drift waiting to
+happen again. Deleting it removes the failure mode rather than detecting it. By the time it
+was fixed the line read 0.135.0 against an actual 0.141.0 — six releases, not the four in the
+title.
+
+Surveyed for siblings before choosing: one live instance only. The other repo-wide hit,
+`docs/superpowers/specs/2026-07-25-ts-publish-orgs-design.md:213` ("Current version 0.97.0"),
+is a dated design document recording a point in time and is correct as written.
+
+**Not done:** no anti-pattern rule forbids a `Current version: **X.Y.Z**` line from coming
+back. One instance did not justify a new pattern, but `check_patterns.py` is where it would
+go if it recurs.
+
+
+## BL-278 — `_extract_noodle_joins` drops two relationship shapes that have nothing to do with the operator `Tier 2`
+
+**Filed:** 2026-09-17.
+**Source:** review of PR SCAL-331323, which unblocked `.tds`/`.tdsx` parsing and so made this
+function reachable for published datasources for the first time.
+**Affects:** `tools/ts-cli/ts_cli/tableau/twb.py` (`_extract_noodle_joins`).
+
+Modern Tableau writes joins as a relationship graph (the "noodle") rather than
+`<relation join=...>`. `_extract_noodle_joins` reads that graph and drops two shapes, both
+using `=`:
+
+1. **AND composite.** The lookup is `rel.find("./expression[@op='=']")` — a *direct child*.
+   An `AND` wraps its `=` nodes, so the find returns None and the relationship is skipped.
+2. **Bare operand.** Table identity is parsed out of the column text, so both sides must
+   carry a `(Table)` suffix (`if not (ltab and rtab): continue`). Tableau routinely writes
+   the base table's own column bare — `[METRIC_ID] = [CALC_METRIC_ID]`, or one side bare and
+   one suffixed.
+
+**Distinct from BL-219**, which is about the comparison *operator* — a relationship on any
+operator but `=` being dropped. Both shapes here use `=` and are still dropped, so fixing
+BL-219 does not fix them.
+
+**Measured** on the 5 real published datasources used to qualify SCAL-331323:
+
+| file | relationships | joins extracted |
+|---|---|---|
+| optimizely_production.tdsx | 9 | 0 |
+| gifting_dataset.tdsx | 1 | 0 |
+| Insights _ Campaign Data.tdsx | 1 | 0 |
+| cpg_lp_engagement.tdsx | 1 | 0 |
+| **total** | **12** | **0** |
+
+**Severity — which shape actually trips it.** A multi-table datasource reaching the model
+with no join is the outcome the `_extract_noodle_joins` call site warns about ("a multi-table
+model imports with no join and ThoughtSpot rejects it"), turning "migrated nothing" into
+"emits something that fails import". The 5 files above are mostly single-table or view-backed
+(3 tables against 14 SQL Views), where joins do not arise — so the loud-failure case needs a
+multi-table published datasource to appear. Worth confirming which of the 5, if any, is that
+shape before sizing the fix.
+
+**Approach.** Each `<relationship>` carries `first-end-point`/`second-end-point` `object-id`
+attributes that resolve directly to `<object caption=...>` in the same `<object-graph>`.
+Resolving table identity from those instead of parsing it out of the column text removes the
+suffix requirement entirely. Recursing into `AND` for the comparison list handles the
+composite. `_collect_comparisons` in the same file already does that recursion for the
+physical-join shape.
+
+**Third shape observed (2026-09-22, SCAL-330635 audit).** Beyond the two above, a
+relationship was observed resolving its *table* to a bracketed column-like value and its join
+*key* to a data type:
+
+```
+left_table  "[PROMOTION_ID]"
+right_table "[PROMOTION_ID (Custom SQL Query6)]"
+keys        [{"left": "INT", "right": "INT"}]
+```
+
+Neither side names a table the datasource has, and `INT` is a type rather than a column, so
+the entry binds to nothing downstream. **Pre-existing and outside SCAL-330635's changes** —
+byte-identical output was produced by `main` and by that branch, which touched
+`_extract_joins` only and never `_extract_noodle_joins`. Recorded here because it is the same
+function and the same class of silent loss as the two shapes above; whether it is a third
+defect or a consequence of the bare-operand shape is for the fix to establish.
+
+**Target:** next Tableau parser pass.
+
+---
+
+## BL-274 — two PRs can ship the same ts-cli version with zero conflicts and every gate green `Tier 2` -- **RESOLVED 2026-09-22**
+
+**Filed:** 2026-09-16.
+**Source:** review of PR #511 (SCAL-338450), caught by simulating its merge against `main`.
+**Affects:** `tools/validate/check_version_sync.py`, `CHANGELOG.md`, `tools/ts-cli/pyproject.toml`,
+`tools/ts-cli/ts_cli/__init__.py`.
+
+**Demonstrated, not theorised.** PR #512 merged on 2026-09-16 releasing ts-cli **0.139.0**. PR
+#511, branched earlier from 0.138.0, also bumps to **0.139.0**. Both sides change the same two
+lines to the same value, so git sees an identical change on both branches and auto-merges with
+**no conflict at all** — `git merge-tree origin/main pr511-review` reports zero markers and the
+merged tree carries `version = "0.139.0"`. GitHub agrees: `mergeable=MERGEABLE`.
+
+Every existing gate passes. `check_version_sync.py` compares `__init__.py` against
+`pyproject.toml` and they still agree — the invariant it checks is *internal consistency*, not
+*novelty*, and the collision preserves internal consistency perfectly. The result is two
+distinct releases published under one version number, and a `CHANGELOG.md` carrying two
+entries that both claim 0.139.0.
+
+**This is the BL-171 shape in a different file.** `check_backlog_integrity.py` exists because
+two branches independently claimed BL-171 and "accept both" passed all 23 pre-commit checks —
+that validator now enforces *uniqueness* of a BL id. The version number has the same
+single-fixed-insertion-point structure, the same append-only CHANGELOG beside it, and no
+uniqueness rule. The version case is worse in one respect: the BL-171 collision at least
+produced a visible conflict, and this one does not, because agreeing on the same wrong value
+is invisible to a three-way merge.
+
+**Approach.** Extend `check_version_sync.py` with a novelty rule: on a PR that changes the
+version, assert the new value does not already appear in a `git tag`, in `CHANGELOG.md` on the
+merge base's `main`, or in `origin/main`'s `pyproject.toml`. That is the one check that fires
+here and cannot be satisfied by two branches making the same edit. A companion CHANGELOG rule
+— no two entries naming the same ts-cli version — covers the case where the version is bumped
+correctly but the changelog line is duplicated. Note this is a CI-only check: it needs
+`origin/main`, so it cannot be a pure pre-commit hook.
+
+**Target:** next validator pass — take with BL-229 and BL-231, both validator-coverage items.
+
+**Resolved 2026-09-22 (SCAL-331323 review follow-up).** `check_version_sync.py` gained the
+novelty rule, opt-in via `--base` and wired into CI as `--base origin/main`; the CI job
+already checks out with `fetch-depth: 0`, so the base ref is present. Two rules landed:
+
+1. If the branch changes `tools/ts-cli/ts_cli`, its version must be neither the base's
+   `pyproject.toml` version nor any release already marked `bump ts-cli to vX.Y.Z` in the
+   base's `CHANGELOG.md`. Scoped to the shipped package deliberately — a branch touching
+   only `tools/ts-cli/tests/` releases nothing and must not have to invent a version.
+2. No `CHANGELOG.md` may mark the same release twice. Needs no git, so it runs on every
+   commit, and it is what catches a correctly-bumped PR whose changelog line was duplicated
+   as well as the merged state of two colliding PRs.
+
+**Verified against the live recurrence, not only fixtures.** #484 (`60721ff9`) and #516 both
+bumped 0.140.0 → 0.141.0; #516 merged first as `67bc5f5`. Run against the real #484 head:
+`FAIL version novelty (0.141.0 against origin/main)`. Without `--base`, the same head still
+prints `PASS version sync: 0.141.0`, so pre-commit and `git archive` exports are unaffected.
+An unresolvable `--base` is a FAIL, not a skip. 12 unit tests in
+`tools/validate/tests/test_check_version_novelty.py`, one of which reconstructs the
+#484-vs-#516 collision.
+
+**Two limits, both deliberate.** The `git tag` source this item proposed is vacuous — the
+repo has **zero** tags, so `CHANGELOG.md` release markers are the only durable record of
+what shipped, and no dead tag-checking code was added. And two branches open at once still
+both pass, because neither has collided yet: the second is caught when it updates from
+`main`, which branch protection's `strict: true` requires before merge. That makes
+`strict: true` load-bearing for this gate — if it is ever turned off, the gate weakens to
+catching only PRs that happen to rebase.
+
+**Not covered here:** the same shape on backlog ids, which recurred simultaneously — see
+BL-279.
+
+---
+
+## BL-279 — the same collision on backlog ids: uniqueness is enforced within a tree, novelty against `main` is not `Tier 2` -- **RESOLVED 2026-09-22**
+
+**Filed:** 2026-09-22.
+**Source:** review of PR #484 vs PR #516, caught by simulating their merge — the same way
+BL-274 was found, on the same day it was fixed.
+**Affects:** `tools/validate/check_backlog_integrity.py`, `docs/backlog.md`.
+
+**Demonstrated, not theorised.** `main`'s highest id was BL-274 — this file's own version
+collision item. #484 allocated BL-275/276/277 from that fencepost; #516 independently
+allocated BL-275 for an unrelated defect (`_extract_noodle_joins` dropping two relationship
+shapes). Simulating the merge produced **two index rows and two full entries under BL-275**,
+with no git conflict, because the two additions land in different places in the file and a
+three-way merge has no reason to object.
+
+`check_backlog_integrity.py` passes on each branch in isolation. It enforces *uniqueness
+within one tree* — which is precisely what BL-171 asked for, after two branches both claimed
+BL-171 — but it has no notion of *novelty against the base*, so it cannot see an id that is
+unique here and already taken there. Identical in shape to BL-274, in a different file, and
+missed for the same reason: the rule that exists checks internal consistency, and a
+collision preserves internal consistency.
+
+Backlog ids are worse than the version number in one respect: `check_backlog_integrity`
+Rule 2 already validates citations from `agents/`, `tools/` and `.github/`, so a duplicated
+id does not dangle — every citation resolves, to whichever entry the reader reaches first.
+
+**Instance fixed, class open.** #516's new item was renumbered BL-275 → BL-278 before merge
+(`66de6d1`), chosen over renumbering #484's because #484's BL-275 is filed 2026-08-06 and
+already cross-referenced from BL-277, `references/open-items.md` #3 and two dated changelog
+entries, while #516's was filed 2026-09-17 with a single citation. Nothing stops the next
+pair.
+
+**Approach.** Give `check_backlog_integrity.py` the rule BL-274's fix just added to
+`check_version_sync.py`: an opt-in `--base` that asserts no `## BL-NNN` heading introduced by
+the branch already exists at the base. Same opt-in shape (pre-commit and `git archive`
+exports have no base ref), same FAIL-not-skip on an unresolvable base, and the same
+dependency on `strict: true` to catch the second of two open PRs. The version rule's
+`novelty_violations` is the template.
+
+**Target:** next validator pass — with BL-229 and BL-231, as BL-274 proposed for itself.
+
+**Resolved 2026-09-22.** `check_backlog_integrity.py` gained **Rule 4**, opt-in via `--base`
+and wired into CI as `--base origin/main`; the job already checks out with `fetch-depth: 0`.
+
+**Three points, not two.** An id present on both the branch and the base is normally just an
+item the branch inherited — it is a collision only when the branch *introduced* it, which is
+what absence at the merge base establishes. A two-point comparison would flag every inherited
+item and be switched off within a day. The converse is equally deliberate: ids the base gained
+that the branch has never seen are ordinary drift, not a finding.
+
+**Verified against the real collision, not only fixtures.** Replaying #516's pre-renumber head
+`ded1d002` against #484's head `60721ff9` as base: `Rule 4: ✗ BL-275`, exit 1. Replaying the
+renumbered head that actually shipped (`66de6d1`, BL-278) against the same base: clean. An
+unresolvable `--base` exits **2** — this module's established "could not run, NOT a pass" code,
+which CI's `|| rc=1` already treats as failure. 8 unit tests in
+`tools/validate/tests/test_check_backlog_id_novelty.py`, including the inherited-id and
+base-drift cases that a naive implementation gets wrong.
+
+The success line names Rule 4 only when `--base` was passed. Claiming a clean novelty check on
+a run that never made one is the same false confidence that was shipped and then fixed twice in
+`check_version_sync.py` (#518, #519) — worth stating because that slip recurred once already
+after being fixed.
+
+**Same limit as BL-274, inherited by construction.** Two branches open at once still both pass,
+because neither has collided yet; the second is caught when it updates from `main`, which
+branch protection's `strict: true` requires before merge. `strict: true` is load-bearing for
+both gates.
+
+---
+
+## BL-277 — a mixed-collection join is extracted correctly and then dropped by both `model_tables` builders `Tier 1`
+
+**Filed:** 2026-09-21.
+**Source:** review of SCAL-330635. Split out of BL-275, which is now PARTIAL — extraction
+fixed there, emission open here.
+**Affects:** `tools/ts-cli/ts_cli/model_builder.py` (`_sql_view_model_tables`, and the
+physical-table `model_tables` assembly).
+
+A Tableau datasource can mix **physical tables** and **Custom SQL queries** (which become
+SQL Views). Two separate builders emit `model_tables[]`, and each keeps a join only when the
+counterpart sits in **its own** collection:
+
+| site | filter | collection |
+|---|---|---|
+| `model_builder.py:112` | `j["right_table"] in by_name` | SQL views only |
+| `model_builder.py:351` | `j["right_table"] in table_names` | physical tables only |
+
+A join *between* the two kinds matches neither, so it is silently discarded after extraction
+and `model_tables` is emitted with no `joins` key at all.
+
+**Observed** on a datasource joining a Custom SQL query to a physical table: `parse`
+reports the join with a SQL-view name on one side and a physical-table name on the other;
+`build-model` then emits `joins: 0` and `model_tables` for all three tables with no `joins`
+key. Reproduce by constructing that shape — one `type='text'` relation joined to one
+`type='table'` relation — rather than relying on a specific workbook.
+
+**Why it matters.** This is the outcome `_extract_joins`' own call site warns about — "a
+multi-table model imports with no join and ThoughtSpot rejects it". It converts "join
+missing from the model" into an import failure, or worse a cartesian result if the model
+does load. `ts tableau verify` notices but only as a WARNING (`tableau/verify.py:294`), so
+nothing fails.
+
+**Approach.** Match `right_table` against `table_names | by_name` in both builders, and
+resolve each key through whichever side owns it — `_resolve_view_key` currently maps
+physical→view column names for SQL views only, so the mixed pair needs the owning side
+chosen per key rather than per builder. Verify through `build-model` and quote the emitted
+`joins` block; parse-level evidence is what let BL-275 be marked resolved prematurely.
+
+**Audit finding (2026-09-22, SCAL-330635).** An audit of available Tableau workbooks put a
+size on this: of the join clauses the parser extracted, **24 of 52 did not reach
+`model_tables[]`**, and every one of those was this mixed-collection shape. On that sample it
+was the largest single source of join loss — larger than every unsupported-operator and
+unsupported-operand skip combined, which together accounted for none of it. Treat those
+figures as one measurement rather than a standing property of the codebase.
+
+The shape is constructible without any particular workbook: one datasource holding a Custom
+SQL relation (`type='text'`, which becomes a SQL View) and a physical table relation
+(`type='table'`), joined to each other. Extraction resolves both sides correctly; each
+`model_tables` builder then requires the counterpart to sit in its own collection, so neither
+keeps it.
+
+**Target:** next Tableau build-layer pass.
+
+---
+
+## BL-275 -- `_extract_joins` drops joins with a nested equality expression or a Custom-SQL join side `Tier 1` -- **PARTIAL: extraction fixed 2026-08-07, emission still open**
+
+**Status corrected 2026-09-21 (review of SCAL-330635).** Marked RESOLVED on the strength of
+`ts tableau parse` alone — the changelog says so in its own words, "live-verified via
+`ts tableau parse` (0 joins → 1, correctly named and keyed)". Parse is the layer that was
+fixed; `build-model` is the layer the user experiences and it was never run. Re-verified on
+the datasource this item was filed from — a Custom SQL query joined to a physical table:
+
+```
+parse       JOIN left=<SQL view> right=<physical table>
+build-model joins: 0   (model_tables carries the tables and no joins key)
+```
+
+The extraction half is genuinely fixed. The emission half is **BL-277** — a join whose two
+sides live in different collections is dropped by both `model_tables` builders. So the
+symptom this item exists for, the one `_extract_joins`' own call site warns about ("a
+multi-table model imports with no join and ThoughtSpot rejects it"), is unchanged.
+
+**Filed:** 2026-08-06. **Jira:** SCAL-330635.
+**Source:** `ts-convert-from-tableau` accuracy-testing pass (Keshav Sharma KT handoff) --
+found on `Multi level WB v0.twb`, a workbook built specifically to exercise multi-level
+formulas and multi-table joins. First concrete test case for
+`references/open-items.md` #3 (COLLECTION datasources -- now OPEN; its "no example
+workbook" deferral reason no longer holds).
+**Affects:** `tools/ts-cli/ts_cli/tableau/joins.py::_extract_joins`,
+`tools/ts-cli/tests/test_model_builder.py::TestExtractJoinsUsesRelationName`.
+**Status:** **PARTIAL** -- extraction fixed 2026-08-07 (ts-cli **v0.138.0**); emission open, see BL-277.
+
+**The bug.** `ts tableau parse` reported 0 joins for this workbook, though the raw TWB XML
+has one:
+
+```xml
+<relation join='left' type='join'>
+  <clause type='join'>
+    <expression op='='>
+      <expression op='[Custom SQL Query].[Sales Person]' />
+      <expression op='[dim_sales_team_clean_updated.csv1].[Sales Person]' />
+    </expression>
+  </clause>
+  <relation name='Custom SQL Query' type='text'>SELECT ...</relation>
+  <relation name='dim_sales_team_clean_updated.csv1' type='table'>...</relation>
+</relation>
+```
+
+Three defects, all in `_extract_joins`: (1) `clause.findall(".//expression")` is recursive,
+so on this nested shape it returns 3 nodes (the wrapping `op='='` node plus its two
+children) -- `exprs[0]` became the wrapper, never a bracket reference, so
+`join_keys` stayed empty and the join was dropped, silently. (2)
+`rel.findall("./relation[@type='table']")` only recognized `type='table'` -- the Custom SQL
+side (`type='text'`) never resolved even with (1) fixed. (3) found while implementing the
+fix: the clause's expressions here are table-qualified (`[Table].[Col]`), but the caller
+(`model_builder.py`'s join `on:`-clause assembly, which prepends its own `table::` qualifier
+from `left_table`/`right_table`) expects a bare column name -- the existing
+`.strip("[]")` only strips outer brackets, which would have emitted the corrupted key
+`Custom SQL Query].[Sales Person` into the generated join `on:` clause.
+
+**The fix.** `_leaf_expressions()` walks to `<expression>` nodes with no `<expression>`
+children -- robust to arbitrary nesting depth, correct for both the flat (existing,
+already-tested) shape and the nested one. The table-side lookup now accepts `type='text'`
+alongside `type='table'`. `_join_key_column()` strips a table-qualified operand down to
+just the column name (`stripped.rsplit("].[", 1)[-1]` when `"].["` is present), leaving the
+bare-ref case (the existing test's shape) unchanged.
+
+**Testing.** Two new tests in `TestExtractJoinsUsesRelationName`:
+`test_join_with_nested_equality_and_custom_sql_side_not_dropped` (reproduces the exact bug
+shape above; asserts both table names resolve and `keys` is the bare
+`{"left": "Sales Person", "right": "Sales Person"}`) and
+`test_join_with_nested_equality_both_sides_table_not_dropped` (isolates the index-shift
+defect alone, nested equality with no Custom SQL side involved, to measure whether plain
+table-to-table joins were also silently affected). Full suite: 4059/4059 passed, no
+regressions. Live-verified: `ts tableau parse` on the real workbook went from 0 joins to 1,
+correctly named and keyed.
+
+**Known follow-on, deliberately not included in this fix:** the same workbook's live
+`<connection>` duplicates this join under a second, cached copy inside an object-graph
+cache block (`<object id='_9BBB...'><properties>`) -- see BL-276.
+
+**Update 2026-09-10 -- operator fidelity.** `_extract_joins` never read a join clause's
+actual comparison operator, so a non-`=` clause (`<>`, `>=`, ...) was either dropped with no
+warning or -- once the nested shape parsed -- would have been emitted as an equi-join `on:`
+clause, which silently changes every measure built on that join. Fix: the wrapper's `op` is
+read (flat-shape clauses have no wrapper and are equality by construction); **only `=` is
+migrated**, and any other operator is skipped with a warning rather than emitted.
+`_extract_joins` now returns `(joins, warnings)`, threaded through `parse_twb` and
+`commands/tableau.py`'s validation-warnings aggregate into a "Join warnings" section in the
+migration report.
+
+**Emitting the real operator was considered and rejected.** ThoughtSpot's `on:` does document
+range operators, but three things argue against it and nothing argues for it: no validator in
+this repo inspects the emitted `on:` operator, so a wrong one surfaces only at a customer's
+import; every join this builder writes carries `cardinality: MANY_TO_ONE`, which a range or
+not-equal relationship cannot satisfy; and BL-240 records `>=` returning materially wrong
+numbers on **both** legs of an ASOF join, i.e. the exact substitution this would have made.
+The 33-workbook corpus contains **no** non-equality join, so there is no demand to weigh
+against that risk. Non-equi support is deferred, not refused.
+
+**Testing.** `TestExtractJoinsUsesRelationName` covers `>=` and `<>` each skipped and
+reported, an ASOF-shaped composite (`A=B AND C>=D`) skipped **whole** rather than partially
+emitted, and a genuinely unsupported operator (`LIKE`) skipped and warned about, standalone
+and inside a composite key.
+
+**Update 2026-09-10 -- composite-key truncation.** `_extract_joins` only ever paired the
+first two leaves found (`exprs[0]`/`exprs[1]`) into one key. For a composite-key join
+(`A=B AND C=D`, or three conditions as a flat AND or nested AND-of-AND), every condition
+after the first was silently discarded -- one key emitted where two or three were authored,
+with clean TML and a clean lint. A join on a partial key doesn't fail import -- it fans out,
+and every measure built on it silently double-counts.
+
+Fix: `_leaf_expressions()`/`_clause_operator()` replaced by `_collect_comparisons()`, which
+recurses into an `<expression op="AND">` node's children at any depth, returning one
+`(left, right, op)` triple per real comparison. `_extract_joins` now emits one key per
+equality comparison; if any comparison in a composite group is not an equality, the whole
+key is dropped rather than just the offending pair
+-- a partial composite key carries the same fan-out risk as the original defect.
+
+**Update -- PR review.** `_join_key_column()` became `_join_key_operand()`, returning
+`(column, table)` rather than discarding the qualifier: on a nested `((A⋈B)⋈C)` the outer
+relation's direct children are a join node plus one table, so child order resolves only one
+side, and the qualifier is the only thing in the XML that pairs the clause with its tables
+(it also carries the operand order, which need not match child order). Clause selection
+narrowed to `./clause` -- a descendant search also picked up the inner relation's clause and
+welded two joins into one bogus composite. Only the `<clause>` node is unwrapped now; an
+`<expression>` keeps its operator, so `NOT(A=B)` is reported rather than read as the
+equality it wraps. All join extraction moved to `ts_cli/tableau/joins.py` (BL-069
+module-per-concern pattern, as `set_extract.py` before it), re-exported from `twb.py`.
+
+**Testing.** Cases covering a 2-condition flat AND, a 3-condition AND-of-AND, an ASOF-shaped
+composite (`A=B AND C>=D`, skipped whole), and a composite mixing an equi condition with a
+genuinely unsupported operator (drops entirely).
+
+**Update 2026-09-10 -- function-wrapped operands.** `UPPER([OrderId]) = [OrderId]` (a
+case-insensitive join) was silently mishandled: the original code's leaf scan found
+`UPPER`'s inner `[OrderId]` and the right-side `[OrderId]` as the only childless nodes, so
+the comparison silently unwrapped to bare `[OrderId] = [OrderId]` -- the function vanishes
+with no error. After the composite-key fix above, the terminal match required both sides of
+a comparison to be true leaves, so the whole clause silently returned nothing instead --
+still no trace.
+
+Fix: `_collect_comparisons`'s terminal match no longer requires both children to be
+leaves -- any two-child, non-`AND` node is handed through as one comparison. The
+bracket-prefix check in `_extract_joins` (which previously failed with no warning at all)
+now warns naming the unsupported operand and both tables, and drops the whole key when the
+comparison is part of a composite one.
+
+**Testing.** Two new cases: a standalone function-wrapped operand, and one inside a
+composite key. Full suite: 4067/4067 passed.
+
+---
+
+## BL-276 -- `_extract_joins` has no filter for object-graph-cached join duplicates `Tier 2`
+
+**Filed:** 2026-08-07. **Jira:** SCAL-330635 (follow-on, filed separately by request).
+**Source:** live-verification of BL-275's fix on `Multi level WB v0.twb` -- fixing the
+silent join-drop exposed a second, previously-invisible defect (masked until now because
+`_extract_joins` always returned 0 joins for this workbook regardless).
+**Affects:** `tools/ts-cli/ts_cli/tableau/joins.py::_extract_joins` (the function
+moved out of `twb.py` after this item was filed).
+**Status:** **DONE** (2026-09-28, SCAL-326660, ts-cli v0.152.0) — but NOT as designed
+below; see the closing note.
+
+After BL-275's fix, `ts tableau parse` on this workbook reports the same join **twice**.
+The second copy lives inside `<object caption='Query 1' id='_9BBB096D8D91453E94133E5DAB1262E7'>
+<properties context=''><relation join='left' type='join'>...` -- Tableau's object-graph
+caching mechanism, tied to the *same* internal object ID that already produces the
+`__tableau_internal_object_id__` junk pseudo-columns this codebase already filters out
+elsewhere (`reconcile.py`'s `clean_columns`/`drop_junk_columns`). `_extract_tables` and
+`_metadata_column_records` already have working wrapper-detection logic for the analogous
+Extract-mirror case (tables/columns written twice, once live and once under `<extract>`'s
+own mirrored `<connection>`) -- that protection was never extended to `_extract_joins`,
+which currently walks every `<relation join=...>` anywhere under the datasource with no
+awareness of which one is live versus a cached mirror. A model with a duplicate join
+between the same two tables is likely to fail import (`ts tml import`) or produce a
+doubled `on:` clause.
+
+**Before writing a fix:** confirm "nested inside `<object>/<properties>`" is a reliable,
+general signal for "this is a cached mirror, skip it" -- not something derived from a
+single example. If it holds, the fix is a new filter analogous to
+`_wrapper_relation_names`/`_is_extract_wrapper`, applied inside `_extract_joins`.
+
+**Testing (once fixed):** a fixture combining a live join relation with a duplicate
+`<object id='...'><properties><relation join=...>` mirror of the same join; assert
+`_extract_joins` returns exactly one entry. Live-verify against `Multi level WB v0.twb`
+(1 join, not 2) after the fix.
+
+**Update 2026-09-10.** Confirmed live on `Multi level WB v0.twb`: `_extract_joins` still
+returns the same join twice -- the ancestor chain of the second copy is
+`relation -> properties -> object[id=_9BBB...] -> objects -> object-graph -> datasource`,
+distinct from the live copy's `relation -> connection -> datasource`, confirming the
+"nested inside `<object-graph>/<objects>`" signal this entry asked to verify. Concrete
+consequence: the duplicate reaches `model_tables[].joins[]` as two identical entries,
+`ts tableau build-model` doesn't run `lint_tml` itself so it emits silently, and the
+skill's Step 6 `ts tml lint` hard-fails on I14 (BL-202's duplicate-`(from_node,
+joins[].with)` guard) -- whose remedy (rename/alias a role-played dimension) misdiagnoses a
+cached mirror as a real duplicate relationship. Deferred to a follow-up change rather than
+fixed here; still OPEN, fix design unchanged.
+
+**Audit finding (2026-09-22, SCAL-330635).** Independently reproduced on more than one
+workbook during a real-workbook audit, so the duplication is not specific to the datasource
+this item was filed from. One authored join was observed emitted three times. That also makes
+the duplicate count a confounder for any join-loss measurement taken from parse output, since
+the mirrors inflate the denominator.
+
+**Closed 2026-09-28 (SCAL-326660) — the proposed design was wrong.** This item asked for
+the signal to be confirmed general before a fix was written. It is not, and the check is
+what found it.
+
+Two mechanisms duplicate a join, not one, and the object-graph copy this item describes is
+the minor of them. The dominant one is a sibling pair of
+`_.fcp.ObjectModelEncapsulateLegacy.{true,false}...relation` wrappers under `<connection>`
+— the same physical tree written twice, once per setting of that feature flag, so either
+reader finds a tree it understands. A datasource carrying both mechanisms emits one
+authored join three times, which is the triplication the 2026-09-22 audit note reports.
+
+The `_is_extract_wrapper`-style subtree exclusion proposed above **deletes real joins**. A
+logical object's `<properties>` tree is not reliably a mirror: it can be RICHER than the
+`<connection>` tree, carrying a further table joined onto the pair the live tree stops at.
+Excluding the subtree drops that join, and because no other part of the file records it,
+nothing downstream can notice — the failure would have been a silent loss introduced by a
+fix for a duplicate.
+
+Worth recording as method, because the first measurement agreed with the proposed design
+and was wrong: an `ElementTree` path of `.//object-graph//relation[@join]` does not match
+`_.fcp.ObjectModelEncapsulateLegacy.true...object-graph`, since the feature-flag prefix is
+part of the tag. That undercount made the exclusion look safe. Any future scan of this
+tree must strip the `_.fcp.<Feature>.<true|false>...` prefix before matching a tag.
+
+Fixed instead by collapsing identical joins to the first occurrence, comparing the emitted
+VALUE. A copy is dropped only once something identical has already been kept, so a join
+that exists in exactly one place always survives wherever it sits. Identity is the whole
+emitted join — type, both tables, and the key columns — with the key pairs compared as a
+set, so a composite key written in the other order is recognised as the same join while
+two relationships between one table pair on different columns both survive and I14 still
+fires on the real case. No warning is emitted: nothing is lost, and the file format's own
+redundancy is not a migration finding.
+
+Regression tests in `tools/ts-cli/tests/test_tableau_joins_correctness.py` cover both
+mechanisms, the richer-object-graph case that rules out subtree exclusion, and the
+over-collapse guards.
+
+---
+
+## BL-280 — a clause-derived table name is never checked against the relation it belongs to `Tier 2`
+
+**Filed:** 2026-09-22. **Jira:** SCAL-330635 (follow-on, separated from that PR).
+**Source:** review of SCAL-330635. Found while closing the qualifier-depth defect: the
+leaf fix landed, the failure class it belongs to did not.
+**Affects:** `tools/ts-cli/ts_cli/tableau/joins.py::_join_sides`.
+**Status:** OPEN.
+
+`_join_sides` resolves a join's two tables from the clause's operand qualifiers and
+returns them unverified. Nothing confirms the resulting names correspond to the
+relation's own children, so a qualifier that is real XML but not a table name produces a
+pair that looks resolved and binds to nothing.
+
+Reproduce by qualifying both operands one level above the table — a database or schema
+segment where a table segment is expected:
+
+```
+clause   [db].[public].[OrderKey] = [db].[public].[Ref]
+children orders, returns
+result   left_table='public'  right_table='public'   warnings: []
+```
+
+Both names are non-empty, so the unresolved-pair guard does not fire; neither matches a
+relation, so both `model_tables` builders discard the join; and because the two names are
+equal, the per-comparison re-orientation cannot fire either. The join is reported by
+`ts tableau parse` and absent from the emitted TML, with nothing said anywhere.
+
+The same shape is the general case of several defects fixed one at a time in
+SCAL-330635 — bracket debris in the table half, a blank pair, a reversed operand order.
+Each was a different way of arriving at a name the relation does not have.
+
+**Approach.** Validate the clause-derived pair against the relation's own `type='table'`
+and `type='text'` children before returning it. When both names match a child, return
+them. When neither does, fall back to child order, which is already the legacy path.
+When exactly one matches, return the empty pair so the existing unresolved-pair guard
+reports it rather than emitting a half-resolved join. Any fallback or refusal must warn
+through the `join_warnings` channel, so the loss is visible in the migration report
+rather than inferred from a missing join.
+
+This changes `_join_sides`' resolution semantics, which is why it was separated from
+SCAL-330635 rather than folded into it — that PR had already changed this function twice.
+
+**Testing.** A clause qualified one level above the table, asserting the join is either
+correctly resolved or reported, never silently emitted with a name no relation carries.
+The existing `_join_sides` tests pin the qualifier-over-child-order convention and must
+continue to pass unchanged.
+
+**Target:** next Tableau join-parser pass, with BL-277.
+
+---
+
+## BL-296 — Tableau physical joins claim a cardinality direction they cannot know `Tier 2`
+
+**Filed:** 2026-09-22, routing audit finding 17.1.
+**Affects:** `tools/ts-cli/ts_cli/tableau/joins.py` (`_join_sides`); contrast
+`tools/ts-cli/ts_cli/tableau/twb.py` (the noodle path).
+
+17.1 reported that PR #484/#519 changed `_join_sides` to resolve `(left_table,
+right_table)` from the first qualified comparison, and asked for child order to be
+restored for flat joins. Probing the parser changed the shape of the question.
+
+| Shape | clause anchor | child-order anchor |
+|---|---|---|
+| flat, operands in child order | `(ORDERS, RETURNS)` | `(ORDERS, RETURNS)` — agree |
+| flat, operands reversed | `(RETURNS, ORDERS)` | `(ORDERS, RETURNS)` — **disagree** |
+| nested `((A join B) join C)` | `(B, C)` | `['C']` — **cannot resolve** |
+
+The audit's fix only ever applied to the flat case; child order drops a nested join
+entirely, which is why the clause was made authoritative.
+
+**Why it matters:** `twb.py` documents `left_table` as the **MANY side** and pairs it with
+`cardinality: MANY_TO_ONE`, so a reversed pair inverts the cardinality.
+
+**Why flipping the anchor is not the fix.** Neither anchor is evidence of cardinality. The
+noodle path states it outright — *"Tableau defers cardinality to query time, so it is
+(almost always) absent from the file"* — and derives the MANY side from CTE grain. The
+physical path asserts from parse order and compensates nowhere.
+
+**What would settle it:** a real `.twb` with a flat join whose clause names its operands in
+the opposite order to its children. Neither shipped fixture discriminates.
+`tools/ts-cli/tests/test_tableau_joins_correctness.py` pins current behaviour so a future
+change is deliberate.
+
+**Exit:** apply the grain heuristic to the physical path, or stop stamping a
+direction-derived `MANY_TO_ONE` on joins parsed from it. Do not flip the anchor on doc
+evidence — this is a platform limit, verifiable only where it is enforced.
+
+---
+
+## ~~BL-281~~ — a join relation with no `<clause>` is dropped silently `Tier 3` — DONE (2026-09-22)
+
+**Closed 2026-09-22** by the angle-17 routing PR: `_extract_joins` now warns when the table
+pair resolves but no clause produced a key, naming both tables. The 2026-09-22 full audit
+re-found this independently as finding 17.3 — worth noting, because a backlog item and an
+audit finding describing the same defect is a signal the item was not being read when the
+sweep ran.
+
+
+**Filed:** 2026-09-22.
+**Source:** review of PR #484, which built the join-warning channel and closed every other
+silent drop in this function. Found by enumerating the `return None` / falsy-`join_keys`
+exits and checking each against the warnings list.
+**Affects:** `tools/ts-cli/ts_cli/tableau/joins.py` (`_extract_joins`, `_join_sides`).
+
+A `<relation join="inner" type="join">` with two `<relation type="table">` children and **no
+`<clause>` at all** produces `joins: []` and `warnings: []` — no stderr line, nothing in the
+migration report, exit 0. Reproduced through the real CLI at `ed2911e`.
+
+**Why the existing guards miss it.** `_join_sides` resolves the table pair from child order,
+so the unresolved-pair guard cannot fire — it has a perfectly good pair. `clauses` is empty,
+so the loop body never runs, `join_keys` stays `[]`, and the falsy check drops the relation
+without reaching any `warnings.append`. Every other exit in this function was given a message
+by #484; this is the one left, which is why it is worth closing rather than tolerating.
+
+**Why it is not merely cosmetic.** The `join=` attribute is itself proof that a join was
+authored — Tableau does not write it otherwise. So the zero-clause case is precisely the
+shape that should warn. Tableau writes it for a cross join, and it is also what a clause
+shape this parser fails to recognise degrades into if `./clause` (rather than `.//clause`,
+which #484 deliberately narrowed) misses a nested placement. A parser change elsewhere can
+therefore convert a loud failure into this silent one.
+
+**Approach.** Warn when `rel.get("join")` is set and `clauses` is empty, naming the resolved
+pair — the table names are already in hand from `_join_sides`. Distinguish the cross-join
+reading from the unrecognised-shape reading in the text if that is cheap; if not, one message
+naming both possibilities beats the current silence. Reuse the `join_warnings` channel #484
+built, so it reaches the migration report's Join-warnings section with `kind: "join"` for
+free.
+
+**Target:** next Tableau join-parser pass, with BL-277 and BL-280.
+
+---
+
+## BL-282 — two different open items can share a `#N` within one file, and nothing says so `Tier 3`
+
+**Filed:** 2026-09-22.
+**Source:** building the `#N` novelty rule (the BL-274/BL-279 sweep). The cross-branch half
+shipped; this is the half that could not.
+**Affects:** `tools/validate/generate_open_items_index.py` (`parse_open_items`),
+`agents/cli/ts-audit/references/open-items.md`.
+
+`parse_open_items` keys items by number into `by_num` and resolves a clash with
+`_more_resolved` — "most resolved wins". So two genuinely different items sharing `#24` in one
+file produce **one** index row, silently, and the loser never appears in the cross-skill
+triage view. Headers tagged `(historical…)` are skipped earlier and are not the issue.
+
+**Why a strict within-file rule cannot ship yet.** `ts-audit/references/open-items.md`
+deliberately carries a VERIFIED block above an UNVERIFIED one, with `#1`–`#4` and `#8` in
+both — the same item, re-verified later, which is precisely what the dedup exists for. None of
+those five carry the `(historical…)` tag, so there is no discriminator between "same item,
+superseded" and "two different items collided". Failing on duplicates today would fail on five
+correct entries.
+
+**Approach.** Give the superseded copies a marker the parser already understands — either the
+existing `(historical…)` tag or an explicit `— SUPERSEDED BY` suffix — then fail on any
+remaining duplicate number within a file. The cleanup is five headers in one file; the rule is
+then a `Counter` over non-exempt headers, no git needed, so it runs on every commit rather than
+only against a base.
+
+**Already covered, do not re-derive:** the cross-branch case (two branches each appending a
+different `#24`) is caught by `check_open_items.py --base`, which fires because the number is
+absent at the merge base. The ts-audit pairs are present on both sides and are correctly
+treated as inherited.
+
+**Target:** next validator pass, with the remaining sweep items.
+
+---
+
+## BL-283 — the ts-audit check catalog and the code it documents can drift unnoticed `Tier 3`
+
+**Filed:** 2026-09-22.
+**Source:** the BL-274/BL-279 collision sweep. The sweep listed audit `check_id`s as a
+collision candidate; investigating it found the collision half already covered and a
+different, live gap underneath.
+
+**Affects:** `agents/cli/ts-audit/references/check-catalog.md`,
+`tools/ts-cli/ts_cli/audit/checks_*.py`.
+
+**The collision half is already closed, and this is not it.** Two branches each adding
+`def check_a6(...)` is caught by `check_python_redefinitions.py` (shipped 2026-09-22):
+reintroducing a duplicate `def check_a1` makes it fail. So no novelty rule is needed for the
+function names.
+
+**What is actually open** is ordinary doc/code drift with no gate: the catalog documents
+**51** ids while the code emits **50** distinct ones. Nothing compares them. A check deleted
+from the code leaves a documented check that never runs; a check added without a catalog row
+is invisible to the skill that reads the catalog.
+
+**Why a naive comparison is wrong.** The one current discrepancy, `H6`, is *correct*: it sits
+in the catalog's "Deferred / Not assigned" table (`| H6 | Duplicate sets — deferred (requires
+deep set comparison) |`) and has a stub `def check_h6` at `checks_human.py:171` that emits
+nothing. Sibling rows there hold comma-separated ids (`P10, P12`; `S6, S7`) which a
+single-id regex silently skips, so the exemption is accidental rather than expressed. Any
+rule must read the main catalog table and the deferred table as different things.
+
+**Also note** `check_id` legitimately repeats within one function — `check_h10` emits `H10`
+three times, once per finding — so the rule is set equality between catalog and code, never
+"each id emitted once".
+
+**Approach.** Parse the main catalog table's ids and the `check_id="..."` literals, compare as
+sets, and exempt the deferred table explicitly rather than by regex accident. No git needed,
+so it runs on every commit.
+
+**Target:** next validator pass.
+
+
+---
+
+## BL-284 — a physical table and a SQL View sharing one relation name in one datasource are not fully separable `Tier 3`
+
+**Filed:** 2026-09-22.
+**Source:** pre-PR review of the cross-datasource SQL View naming fix (SCAL-339750). Raised
+as a review finding against that change, not as an observed migration failure.
+
+**Affects:** `tools/ts-cli/ts_cli/tableau/naming.py`
+(`_rename_sql_view_in_datasource`, `_sql_view_owns_column`),
+`tools/ts-cli/ts_cli/tableau/twb.py` (`_build_column_table_map`, `_extract_tables`,
+`_extract_sql_views`).
+
+**The representation loses the distinction.** Ownership of a column or a join endpoint is
+recorded as a bare relation NAME: `_build_column_table_map` stores `column -> parent-name`,
+`columns[].table` carries the same string, and `joins[].left_table`/`right_table` name the
+relation. Both `_extract_tables` and `_extract_sql_views` take that name from the relation's
+`name` attribute. So if one datasource declared a physical table `Orders` *and* a Custom SQL
+relation `Orders`, every `"Orders"` in those three structures would belong to both relations
+and nothing downstream could say which. Tableau's own `parent-name` would be the identical
+string, so the information is not merely dropped by our parser — it is not expressed in the
+source either.
+
+**What shipped, and what it does not settle.** Renaming the SQL View for a collision used to
+rewrite those references by exact string equality, which repointed the *physical table's*
+columns and join endpoints at the renamed view. That is fixed: when the name is ambiguous,
+each reference is attributed before being rewritten — a column by whether the view declares
+it (`_sql_view_owns_column`, matching either the Tableau caption `name` or the remote
+`sql_output_column`, case-insensitively), a join endpoint by whether that side's key column
+belongs to the view — and anything not attributable to the view is left on the physical
+table. `_sql_view_owns_column` is a **conservative heuristic, not an ownership model**:
+
+- If the physical table and the SQL View both declare a column of the same name, the
+  reference is **inherently ambiguous** and the heuristic attributes it to the view. No
+  information exists in the parsed representation to decide it correctly.
+- A join clause carrying no `keys` on an ambiguous name is left on the physical table.
+- A view column absent from `sql_views[].columns` is left on the physical table.
+
+**Not observed in any real workbook.** Tableau assigns each relation a name that is unique
+within its datasource, across relation types: **0 of 3,815 raw `<datasource>` elements** in
+the 41-workbook corpus bind one relation name to more than one relation type, and all 209
+`type='table'` relations carry an explicit `name`, so the name-synthesizing fallback in
+`_extract_tables` (`name = rel_name or physical_name`) never fires either. The shape is
+reachable only by calling the public helper with hand-constructed input.
+
+**This is therefore a hardening item, not a GA failure.** Nothing here is a currently
+observed defect in a migration: no corpus workbook exercises the branch, and the corpus
+proves only that gating it left every real path byte-identical. Treat it as the ownership
+model this area will eventually need, not as a live bug.
+
+**Approach (when a real case appears, or the ownership model is revisited).** Carry relation
+identity rather than relation name through the parse — for example a per-column owner key
+that distinguishes the `type='table'` relation from the `type='text'` relation even when the
+two share a `name` — so attribution is exact instead of heuristic. That is a change to the
+parse contract (`col_table_map` is the translator's `scoped_columns`), so it is worth doing
+only against a real workbook that needs it. Until then the conservative heuristic holds, and
+its limits are the three bullets above.
+
+**Target:** next Tableau converter pass.
+
+---
+
+## BL-313 — MERGE mode cannot tell which SQL View spelling the target model uses `Tier 2`
+
+**Filed:** 2026-09-24. **Jira:** SCAL-339750 (follow-on, separated from that PR).
+**Source:** review of SCAL-339750, raised against the merge-mode guard landed there.
+**Affects:** `tools/ts-cli/ts_cli/commands/tableau.py` (`build_model_cmd`'s
+`disambiguate_sql_view_names` pre-pass), `tools/ts-cli/ts_cli/tableau/naming.py`.
+**Status:** OPEN.
+
+`disambiguate_sql_view_names` qualifies a SQL View name that more than one datasource
+declares (`Custom SQL Query` -> `Custom SQL Query (Sales)`), because GENERATE emits every
+datasource into one output directory and one ThoughtSpot namespace. MERGE (`--existing-guid`)
+emits nothing there — it adds formulas to a model that already exists — so the incoming
+names must match that model, and the pre-pass is skipped for it.
+
+Skipping is correct for a target built before the pre-pass existed. It is wrong for one the
+pre-pass itself produced:
+
+```
+GENERATE with the pre-pass   -> model_tables[] carries `Custom SQL Query (Sales)`
+later MERGE into that model  -> pre-pass skipped, formula emits `[Custom SQL Query::…]`
+                             -> table prefix names nothing in the target
+```
+
+Neither spelling is safe to assume: the same guard that fixes the pre-pass-era target breaks
+the post-pre-pass one. `filter_unresolvable_formulas` cannot catch either direction — it
+validates only the column portion after `::` (see its own docstring), so a ref whose column
+exists under a different table prefix is kept and imported.
+
+**Reproduce** by constructing the sequence: a workbook whose datasources declare the same
+Custom SQL relation name, built in GENERATE mode and imported, then re-run against the
+resulting model with `--existing-guid`.
+
+**Approach.** Resolve incoming SQL View names against the target's own
+`model_tables[]` rather than assuming either spelling — the behaviour
+`_load_table_name_map` already advertises for `--table-name-map` ("merge mode resolves
+tables from the existing model"). The pre-pass runs on the full datasource list before the
+per-datasource loop, while the target model is exported inside `_process_datasource`, so
+this needs the export hoisted or the reconciliation moved after it; it is not a
+one-line change, which is why the guard shipped first.
+
+**Target:** next Tableau converter pass.
+
+---
+
+## BL-314 — a parse→TML transformation must be declared to `verify.py`, and nothing enforces it `Tier 2`
+
+**Filed:** 2026-09-25.
+**Source:** review of PR #532, which broke `ts tableau verify` the same way PR #529 did one
+PR earlier. Raised as a review finding against that change, not as a migration failure.
+
+**Affects:** `tools/ts-cli/ts_cli/tableau/verify.py`, `scripts/pre-commit.sh`,
+`CLAUDE.md` (change-impact map).
+
+**The shape.** `verify.py` diffs a **pre-conversion parse** against **post-conversion
+output** — `_table_check` compares `sql_views[].name`/`tables[].name` against
+`model_tables[].name`, `_formula_drop_check` compares TRANSLATABLE-tiered calcs against
+`model.formulas`. That is exactly what makes it a useful fidelity gate, and exactly what
+makes it fragile: **any deliberate transformation between those two points reads as a
+defect.** The gate then hard-fails on correct output, and `SKILL.md` tells the operator a
+structural ERROR means "investigate before importing".
+
+**Three instances, none of which the author was warned about:**
+
+| Transformation | How verify was taught | When |
+|---|---|---|
+| calc renamed on a name clash with a physical column | `_expected_model_names` reproduces the rename recipe | pre-existing; live-reproduced on Ads Commercial Dashboard |
+| SQL View names disambiguated across datasources | `verify_conversion` re-runs the idempotent pass | PR #529 |
+| formula dropped for referencing a pseudo-field | **not yet** | PR #532 (open) |
+
+The first exists *because* the same thing happened before. So this is a recurring class,
+which under the two-bucket rule is the case for promoting it to a check rather than
+re-finding it each time.
+
+**What shipped instead.** A change-impact map row in `CLAUDE.md`, stating the requirement
+and that a fix must come with a test proving the gate still fires for a genuine drop — a
+change that merely silences the check is worse than the false positive it removes. That is
+guidance an author has to read, not a gate.
+
+**Approach.** A soft pre-commit nudge in the shape of `suggest_dependency_types.py`: when a
+staged change touches the transformation layer (`ts_cli/tableau/reconcile.py`,
+`naming.py`, `build_model.py`, `model_builder.py`) without also staging
+`ts_cli/tableau/verify.py` or `tests/test_tableau_verify.py`, print a reminder. Never
+blocks — it cannot know whether a given edit is a transformation — but it puts the question
+in front of the author at the moment it is cheap. Needs a new `suggest_*.py` (the precedent
+is 159 lines), a `$STAGED` grep in `pre-commit.sh`, and a `generate_quality_gates --check`
+regeneration, which is why it did not ride along with the one-line map row.
+
+**Target:** next validator pass.
+
+## ~~BL-315~~ — a day-grain `offset:` window is translated with its offset dropped `Tier 1` — DONE (2026-09-28)
+
+**Filed:** 2026-09-28.
+**Source:** live conversion of a 136-measure budget/forecast Metric View
+(`agent_skills.business_forecast.business_reporting_mv`) on nebula-ts-semview.
+
+**Affects:** `tools/ts-cli/ts_cli/databricks/mv_window_translate.py` (`_window_current`).
+
+**The defect.** When the window's `order:` dimension resolves to a raw date
+(`order["grain"] == "day"`), `_window_current` returns
+`last_value ( sum ( … ) , query_groups ( ) , { [date] } )` **before it reads
+`window["offset"]`**. So
+
+```yaml
+window:
+  - order: date
+    semiadditive: last
+    range: current
+    offset: -364 day
+```
+
+— a prior-year measure — becomes a plain same-day snapshot. It imports, lints clean,
+carries no annotation, and returns **this year's value** under a `py_` name. 19 measures
+in the source MV hit it. Live-caught by number-matching against Databricks, not by any
+gate.
+
+**The correct translation** (live-verified 2026-09-28, exact match on dense daily data):
+`moving_sum ( <inner> , 364 , -364 , [date] )` — the same LAG idiom the month grain already
+uses, with the `one_row_per_period` annotation. The raw-date branch should route to it
+whenever `offset` is set; `last_value` is right only for an offset-less semi-additive window.
+
+**Test to add:** a day-grain `offset: -N day` window must yield `moving_sum (…, N, -N, …)`
+and never `last_value`.
+
+**Resolution (2026-09-28, ts-cli v0.149.0).** `_current_wrap` now checks `offset` before
+the raw-date branch, so an offset always routes to the LAG; `-N week` at day grain lags 7N
+rows, and a month/quarter/year offset at day grain is refused rather than approximated.
+Regression guard: `TestBL315DayGrainOffset` asserts `last_value` never appears when an
+offset is set. Re-running the budget/forecast MV through the fixed CLI reproduced the
+live-verified prior-year numbers exactly.
+
+## ~~BL-316~~ — from-Databricks translator gaps from a budget/forecast Metric View `Tier 2` — DONE (2026-09-28)
+
+**Filed:** 2026-09-28.
+**Source:** same conversion as BL-315. 48 of 136 measures translated unaided; the other 88
+were hand-authored, then number-matched against Databricks on every grain (exact, apart
+from the NULL-vs-0 already tracked as BL-180).
+
+**Affects:** `ts_cli/databricks/mv_parse*`, `mv_sql.py`, `mv_window_translate.py`,
+`agents/shared/mappings/ts-databricks/ts-databricks-formula-translation.md`.
+
+| # | Construct | Measures | What worked (live-verified 2026-09-28) |
+|---|---|---|---|
+| 1 | Uncorrelated scalar subquery over the MV's own source — `(SELECT MAX(dt) FROM <source> WHERE observation = 'current')` — rejected by `parse-mv` as "subquery in measure expr" | 63 | `group_aggregate ( max ( if ( … ) then [dt] else null ) , { } , { } )`. Filter-blind and grain-blind, like the subquery. The mapping doc calls every subquery untranslatable; this whole-table-scalar shape is not |
+| 2 | `AGG(x) FILTER (WHERE c)` as the expr of a `window:` measure — "must be AGG(expression)" | 19 | rewrite to `AGG(CASE WHEN c THEN x END)` first (FILTER-equivalent; NULL for non-matching rows) |
+| 3 | `col NOT IN ('a','b')` — "no documented mapping" | 3 | `[col] != 'a' and [col] != 'b'` |
+| 4 | `SUM(x) FILTER (…) / NULLIF(…)` — "unexpected trailing token ')'" | 2 | parser bug; the same FILTER→CASE rewrite parses |
+| 5 | `SUM(SUM(x)) OVER ()` (share of total) | 1 | `safe_divide ( sum ( x ) * 100 , group_aggregate ( sum ( x ) , { } , query_filters ( ) ) )` |
+| 6 | `window: order: <dim>` where the dim is a non-bucket expression (`DATE_ADD(DATE_TRUNC('WEEK', DATE_ADD(dt, 3)), -3)`) — "cannot determine the physical sort column" | 19 | order `moving_sum` by the dimension's formula: `[formula_Week]`. Ordering by `[dt]` instead forces the query to daily grain and returns NULL |
+| 7 | Ratio window measures (`SUM(a)/NULLIF(SUM(b),0)` + `window:`) | 12 | `safe_divide ( moving_sum ( a … ) , moving_sum ( b … ) )` |
+
+**Two ThoughtSpot limits to document** in the translation doc (both live-probed 2026-09-28):
+
+- **`group_aggregate` cannot sit inside a `moving_sum`.** Every variant — `{ }`/`query_filters ( )`
+  filters, with or without a column predicate — fails at query compile with
+  `Failed to transform QuerySpec`. Items 1 and 2 therefore cannot compose. The conversion used
+  `add_days ( today ( ) , -365 )`, which equals `MAX(current dt) - 364` only while actuals
+  load through yesterday. That is a data-freshness assumption, not an equivalence.
+- **A `moving_sum` LAG only sees rows that survive the query's filters.** Filtered to May–Sep 2026,
+  the prior-year value is NULL in ThoughtSpot and present in Databricks. The `one_row_per_period`
+  annotation should also say "and the query's date filter must include the lag period".
+
+**Two-bucket exit.** Items 1–7 are translator work (one PR, each with a test). The two limits
+are mapping-doc rows plus annotation text.
+
+**Resolution (2026-09-28, ts-cli v0.149.0).** All seven items are translator code with unit
+tests, and both limits are documented (the `one_row_per_period` annotation now states the
+filter limit; the scalar-in-window stand-in `add_days ( today ( ) , -1 )` carries a
+`cap_assumption` annotation — option (a), chosen by the user). The windowed-measure
+translator now applies the window to **every** aggregate via a tokenizer hook, instead of
+stripping one outer aggregate. The unmodified MV now translates **158/158, 0 skipped** (was
+70/158 plus the BL-315 silent wrong answer); 157 of 158 formulas are text-identical to the
+hand-verified conversion after normalising equivalent spellings, and the model rebuilt from
+the CLI's output alone number-matched Databricks on channel share, budget/eCPC variance,
+revenue per booking and daily/weekly/monthly prior-year measures.
+
+## BL-317 — one construct, several ThoughtSpot spellings: `IN`/`NOT IN` and share-of-total `Tier 2`
+
+**Filed:** 2026-09-28.
+**Source:** the conversion-consistency audit of the BL-315/BL-316 PR (angle 9,
+implementation drift). Not fixed there because each item reaches past the Databricks
+converter into a sibling's code or the shared catalog.
+
+**Affects:** `ts_cli/sv_sql.py` (`_construct_in`/`_construct_not`),
+`ts_cli/databricks/mv_sql_constructs.py`, `ts_cli/sv_translate.py`,
+`agents/shared/schemas/thoughtspot-formula-patterns.md`,
+`agents/shared/mappings/ts-snowflake/ts-snowflake-formula-translation.md`,
+`agents/shared/mappings/ts-databricks/ts-databricks-formula-translation.md`.
+
+| Construct | Spellings today |
+|---|---|
+| `x NOT IN (a, b)` | DBX code: `( [x] != a and [x] != b )`. Snowflake doc, Qlik CL07, formula-patterns: `not ( [x] in { a , b } )`. Snowflake **code refuses it** (`sv_sql.py`), so that converter's doc and code also disagree |
+| `x IN (a, b)` | DBX code and Snowflake code: `( [x] = a or [x] = b )` (the two `_construct_in` bodies are copies). Formula-patterns: `[x] in { a , b }`. DBX formula-translation's **to-direction** row still shows `in(x, a, b, c)`, a form the catalog says fails import |
+| `SUM(m) OVER ()` (share of total) | DBX, Tableau, Looker: `group_aggregate ( sum ( m ) , { } , query_filters ( ) )`. Snowflake SV: `group_sum ( m )` |
+
+Every pair means the same thing, NULL handling included, so none of these is a wrong
+number. Each is a second spelling of one target construct, which is what BL-217 exists
+to stop.
+
+**Approach.** Pick one canonical form per construct in `thoughtspot-formula-patterns.md`
+(live-check `not ( [x] in { … } )` first, since it needs `>-` YAML because of the braces);
+add `emit_in_list(operand, values, negate)` to `formula_common.py` and import it from both
+`_construct_in`s; correct the DBX to-direction `in(…)` row; give Snowflake NOT IN the
+shared emitter. Then add a `check_converter_parity` spelling rule for share-of-total, so a
+third spelling cannot appear.
+
+**Target:** next converter-parity pass.
+
+---
+
+## BL-318 — re-running a converter discards ThoughtSpot-side edits; detect, diff, prompt keep/discard `Tier 2`
+
+**Filed:** 2026-09-28.
+**Source:** a cross-converter review of re-run behaviour, prompted by the `ts-link-*` design.
+
+**Problem.** After a first conversion, users add content in ThoughtSpot: column
+descriptions, synonyms, `ai_context`, table `rls_rules`, extra formulas/columns,
+parameters, joins, Spotter instructions. Re-running the same skill on the same source
+should surface those edits and ask whether to keep or discard them. Today:
+
+| Skill | Finds existing Model? | Re-run result | TS-side edits |
+|---|---|---|---|
+| snowflake-sv (CLI) A/B | No (tables only) | New object, or overwrite via `--existing-guid` | Lost |
+| snowflake-sv (CLI) Mode C | Manual GUID/name | In place | Documented as preserved; **code overwrites** — BL-319 |
+| snowflake-sv (CoCo) Mode C | Manual GUID/name | In place, deep-copy | Preserved (reference behaviour) |
+| databricks-mv (CLI + Genie) | No; no update mode | New object or overwrite | Lost |
+| tableau | Model pick for liveboards only | Merge mode adds new formulas | Preserved (additive), but source changes to existing columns never applied |
+| looker / powerbi / qlik / sisense | No | Always a new object (no `guid` emitted) | Duplicate |
+
+Only one shared helper exists (`model_builder.merge_formulas_into_model`, Tableau-only,
+formulas-only). Table RLS survives only where a skill edits the *exported* Table TML;
+skills that emit fresh Table TML never look at an existing table.
+
+**Approach.**
+1. Shared detection: search Model + Tables by name/`db`/`schema`/`db_table` before build;
+   if found, offer update-in-place (reuse GUID) vs new.
+2. Shared diff (`ts_cli/rerun_diff.py` or extend `ts snowflake diff`): export existing
+   TML + `ai/instructions/get` (instructions are not in TML — BL-030), compare to the
+   generated doc, classify each delta as *source-changed* vs *TS-added/TS-edited* per
+   kind (description, synonyms, ai_context, rls_rules, formula, column, parameter, join,
+   instructions).
+3. One prompt: keep all TS-side edits (default) / discard all / per-item. Apply to a
+   deep copy of the exported TML (the CoCo Mode C pattern), never a regenerate.
+4. Adopt in every `ts-convert-from-*` **and** `ts-link-semantic-layer` from its first
+   version. Subsumes the "never overwritten" rules of BL-021 Mode D; BL-021 keeps the
+   selective-sync UX on top.
+
+**Side finding (verify, likely a one-liner):** powerbi SKILL.md:90-91 and qlik
+SKILL.md:96-97 pass TML files positionally to `ts tml import`, which takes only
+`--file`/`--dir`.
+
+**Target:** next converter pass.
+
+---
+
+## BL-319 — CLI Snowflake Mode C overwrites the TS-side edits it promises to keep `Tier 1`
+
+**Filed:** 2026-09-28. **Source:** BL-318 review; verified against the code.
+
+`agents/cli/ts-convert-from-snowflake-sv/SKILL.md` Step C5 says "Deep-copy the existing
+Model TML. Apply only the confirmed changes" and defers to the KEEP/MERGE and
+"never touch `ai_context` / Instructions" rules in `references/step-c-update-mode.md`.
+The command it then runs, `ts snowflake build-model --existing-guid`, rebuilds the
+model from `parsed.json`/`translated.json` (`sv_build_model.py:395-438`) and only stamps
+the GUID at the root (`:436-437`); `commands/snowflake.py` never exports the existing
+model. So the user's per-column KEEP/MERGE answers, `ai_context`, TS-added formulas,
+columns, parameters and joins are absent from the imported document. The CoCo mirror
+does this correctly (deep-copy + `no_create_new`).
+
+**Approach.** Give `build-model` a `--merge-into <exported.json>` path (or a separate
+`ts snowflake apply-update`) that applies the C4 decisions to a deep copy; test that an
+`ai_context`, a TS-only formula and a KEEP description all survive. Fold into BL-318's
+shared diff if that lands first.
+
+**Target:** next SF converter edit.
+
+---
+
+## BL-320 — Databricks type map lacks `timestamp_ltz` `Tier 3`
+
+**Filed:** 2026-09-28. **Source:** building a `ts-link-*` Table for
+`agent_skills.business_forecast.business_reporting_mv`, whose `DATE_TRUNC` dimensions
+(`month`, `week_mond`) are `timestamp_ltz`.
+
+`ts_cli/databricks/mv_tml.py:_DBX_TYPE_MAP` maps `timestamp` and `timestamp_ntz` only, so
+`map_dbx_type("timestamp_ltz")` falls through. Snowflake already maps `TIMESTAMP_LTZ` →
+`DATE_TIME` (`sv_introspect.py:23-24`); Qlik's map has only `timestamp`
+(`qlik/build_model.py:29-35`).
+
+**Approach.** Add `timestamp_ltz` → `DATE_TIME` to the DBX map (and the reverse map's
+expectations), with a unit test; sweep the other converters' maps for LTZ/TZ variants as
+part of BL-130. The `ts-link-*` builder should share this map rather than carry its own.
+
+**Target:** with BL-130.
+
+---
+
+## BL-321 — `ts-link-*` family and `ts-link-semantic-layer` skill `Tier 2`
+
+**Filed:** 2026-09-28. **Decided:** family name `ts-link-*` (user, 2026-09-28).
+
+**Status: v1 shipped 2026-09-28** — `ts-link-semantic-layer` 1.0.0 + `ts link build`
+(ts-cli 0.150.0). Design changed from the plan below at the user's direction: **no
+per-platform adapters** — one normalized spec and one `--aggregation aggregate|standard`
+switch; re-run preservation parked (BL-318). Remaining: the skill's open items #2–#5
+(Honeydew/Cube/Kyvos metadata, Cube/Kyvos aggregation mode, COUNT_DISTINCT coercion,
+instructions replace-vs-append). The builder carries its own type map (including
+`timestamp_ltz`, and the no-scale → INT64 rule shared with `sv_introspect`) rather than
+`mv_tml`'s, because it must reject unknown types where the Snowflake map defaults to VARCHAR —
+a deliberate third map, so BL-130's type audit should cover it. BL-320 no longer blocks linking.
+
+**What it does.** Instead of *converting* a semantic-layer object into ThoughtSpot joins and
+formulas, register the object itself so ThoughtSpot queries it and the platform generates the
+SQL: one Table over the semantic object + one Model referencing only that Table, no formulas.
+Metadata carried: descriptions, synonyms, `ai_context` where the source has it, Spotter
+instructions (via API — BL-030). Measures → `MEASURE`, dimensions → `ATTRIBUTE`.
+
+**Why a new family.** Not `ts-setup-*` — that is infrastructure or disposable scaffolding for
+other skills; this is a durable end-user Model. Not `ts-convert-*` — the angle-9 auditor globs
+`ts-convert-*`, and its invariants, coverage matrix and fidelity gates would all read a
+formula-free Model as a defect. Adding the family needs `skill-naming.md` row,
+`check_skill_naming.py` `FAMILY_PATTERNS`, and the root `CLAUDE.md` family list.
+
+**Shape.** One skill, per-platform adapters (metadata extraction + aggregation rule), one
+shared builder over a normalized column list:
+
+| Platform | Measure aggregation | Status |
+|---|---|---|
+| Snowflake SV | `AGGREGATE` | manually built, SF Org |
+| Databricks MV | `AGGREGATE` | **prototyped 2026-09-28** — see below |
+| Honeydew | the metric's logical aggregation (`SUM`, `COUNT_DISTINCT`, …) | manually built, HD Org |
+| Cube, Kyvos | TBD | user testing |
+
+**Prototype findings (DBX Org, `nebula-ts-semview`).** `business_reporting_mv` → Table
+`39570acf-7364-4860-a1c4-599c4a9d75b3` + Model `3fee09f8-35a8-49cd-8a84-777b83d694a6`
+(157 columns, 25 with synonyms). AgentQL compiles measures to `MEASURE(col)`; a window
+measure the converter cannot parse (`py_monthly_revenue_gbp`, subquery + window) returns
+correct prior-year values.
+
+- **Non-numeric measures must be skipped and reported.** ThoughtSpot rejects a DATE
+  `MEASURE` and silently coerces it to `ATTRIBUTE`; as an attribute it is emitted bare
+  (`GROUP BY col` / `max(col)`), which Databricks refuses with
+  `METRIC_VIEW_MISSING_MEASURE_FUNCTION` (verified for `last_available_date`, a
+  `MAX(dt)` measure). Workaround is at source: expose a numeric twin.
+- Instructions: TML does not persist them; the API does (BL-030).
+- Type map: needs `timestamp_ltz` (BL-320).
+- Re-run: must detect the existing Table/Model and apply BL-318's keep/discard prompt from v1.
+
+**Target:** next skill.
+
+## BL-322 — period comparisons have no safe formula translation; build the date-shifted join `Tier 1`
+
+**Filed:** 2026-09-28.
+**Source:** the ts-model-parity metric matrix — 2,161 measure × cell outcomes comparing a
+converted Model (B), a linked Metric View Model (A) and the Metric View queried directly on
+Databricks (the reference), for `agent_skills.business_forecast.business_reporting_mv`.
+
+**Affects:** `ts_cli/databricks/mv_window_translate.py` (`_current_wrap`, `_lag_wrap`),
+`ts-convert-from-databricks-mv`, both Databricks mapping docs.
+
+**The defect.** A Metric View period comparison — `window: [{order: <period>, range: current,
+offset: -N <unit>}]`, i.e. every prior-year / prior-month measure — was translated to
+`moving_sum ( m , N , -N , order )`. The MV counts calendar **periods** of its order
+dimension; `moving_sum` counts **rows of the query result**, and a ThoughtSpot formula cannot
+see the grain it is queried at. Measured (Model A matched Databricks in every case):
+
+| Query | Databricks MV | row-lag formula (B) |
+|---|---|---|
+| own grain (`py_monthly` by month), + extra dims (× vertical) | prior-period value | **exact** |
+| coarser (`py_daily_redirects` by month) | 737,575 = prior-year value of the month's last day | **NULL** |
+| finer (`py_monthly_redirects` by date) | 24,928,945 = the month's value on every day | **902,538 = redirects 12 days earlier**, then 0 |
+| a period missing in a group | the correct prior period | a silently shifted period (reasoned; the synthetic data has no gaps) |
+
+The finer-grain case is the dangerous one: a believable number with nothing to flag it, and
+Spotter will group a `py_monthly_*` measure by date. The mapping was "live-verified" (window
+claim matrix C6) only at the order grain on dense data — it proved the idiom *can* match,
+not that it is safe. BL-315 then extended it to day and week grain.
+
+**What shipped (ts-cli v0.151.0).** Such windows now go to `skipped[]` with a reason naming
+the rows-vs-periods mismatch and the alternative. `--allow-row-lag` restores the
+approximation for a user who will only query at the window's own grain; each measure then
+carries a `row_lag_approximation` annotation. Coverage matrix #37/#80/#81 re-scoped; new
+limitation L14.
+
+**The correct translation — still to build.** A date-shifted join: the fact table role-played
+(`alias:`) and joined to a shared date dimension on `date + offset`, so a prior-period measure
+is a plain `sum` over shifted rows. Additive, so correct at **every** grain, immune to gaps,
+survives date filters, and needs no `today()` cap. It deliberately differs from the MV in one
+place: at a coarser grain it returns the prior-period **total**, not `semiadditive: last`'s
+last-day value — right for flow metrics (sessions, revenue), wrong for snapshots (balances), so
+the translation must choose by metric type and declare the difference. The role-play
+machinery exists (skill v1.9.0); the date-dimension synthesis and offset join do not.
+
+**Same class, not yet changed.** `range: trailing|leading N <unit>` also map to a row-positional
+`moving_*` (BL-098 density). Decide whether they get the same default-skip treatment.
+
+**Target:** next DBX pass.
+
+## BL-323 — from-Snowflake window metrics are mistranslated, and the grain Snowflake enforces cannot be enforced in ThoughtSpot `Tier 1`
+
+**Filed:** 2026-09-28.
+**Source:** review of the Snowflake converter prompted by BL-322 (the Databricks period-
+comparison finding). Translator behaviour below was reproduced offline by calling
+`sv_translate._translate_window` directly; Snowflake semantics are quoted from the Snowflake
+docs (*Querying semantic views*, fetched 2026-09-28). Not yet measured live on a Snowflake
+pair — see "Verify".
+
+**Affects:** `tools/ts-cli/ts_cli/sv_translate.py` (`_parse_frame`, `_translate_window`),
+`ts-convert-from-snowflake-sv`, `agents/shared/mappings/ts-snowflake/ts-snowflake-formula-translation.md`.
+
+**1 — the frame is not read. Silent wrong numbers at every grain.** `_parse_frame` reduces
+the frame to one of `cumulative` / `moving` / `other` and `_translate_window` emits a fixed
+form for each, so the frame's size and direction are discarded:
+
+| Snowflake window metric (`SUM(m) OVER (…)`) | Emitted | Wrong because |
+|---|---|---|
+| `ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` (7-row) | `moving_sum ( m , -1 , 0 , day )` | N ignored — hard-coded `-1 , 0` |
+| `… 2 PRECEDING AND CURRENT ROW` (3-row) | the same `moving_sum ( m , -1 , 0 , day )` | identical to the 7-row |
+| `… 12 PRECEDING AND 12 PRECEDING` (a lag via frame) | the same `moving_sum ( m , -1 , 0 , month )` | a lag becomes the same formula |
+| `… CURRENT ROW AND 6 FOLLOWING` | `group_sum ( m )` | a leading window becomes a **grand total** |
+| `ORDER BY month` with no frame (SQL default: `RANGE UNBOUNDED PRECEDING` = running total) | `group_sum ( m )` | a running total becomes a **grand total** |
+| `RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW` | `group_sum ( m )` | a rolling average becomes a **grand total** |
+| `PARTITION BY year ORDER BY month ROWS UNBOUNDED PRECEDING` (YTD) | `cumulative_sum ( m , month )` | partition dropped — BL-242 |
+
+The RANGE-interval and LAG forms are exactly the two examples Snowflake's own docs give for
+window metrics, so this is the mainstream shape, not a corner.
+
+**2 — grain: Snowflake enforces it, ThoughtSpot cannot.** Snowflake requires the window's
+`ORDER BY` / `PARTITION BY [EXCLUDING]` dimensions in every query that returns the metric
+(*"you must also return the dimensions specified in … ORDER BY"*; otherwise *"Dimension
+'DATE.DATE' used in a window function metric must be requested in the query"*). So on
+Snowflake the wrong-grain query of BL-322 is impossible — it errors. A ThoughtSpot
+`moving_* / cumulative_*` formula carries no such rule, and measured on the Databricks pair
+(BL-322) the same functions at the wrong grain return NULL, a plausible wrong number, or a
+changed row count. Even a correctly-framed translation is therefore safe only when queried at
+its order grain, with nothing to stop anyone querying it otherwise.
+
+**3 — rows vs periods.** Snowflake `ROWS` frames and `LAG(m, n)` count rows of the result,
+like `moving_*` — same semantics at the order grain on dense data. `RANGE BETWEEN INTERVAL …`
+counts calendar time, which no ThoughtSpot formula does (BL-322's root cause). `LAG`/`LEAD` are
+refused today (L15, BL-260) — a correct, loud refusal; a future "fix" mapping `LAG` to a
+`moving_sum` lag would reintroduce BL-322 exactly and must not be done.
+
+**Approach.**
+1. Read the frame: emit `moving_* ( m , n , 0 , order )` for `n PRECEDING AND CURRENT ROW`
+   (and the matching start/end for FOLLOWING / offset frames), using the Databricks-verified
+   argument convention; refuse anything else loudly rather than falling through to `group_*`.
+   An `ORDER BY` with no frame is SQL's running total, not a grand total.
+2. Refuse `RANGE BETWEEN INTERVAL …` by default with a BL-322-style reason (period-based; no
+   formula equivalent); the date-shifted join from BL-322 is the correct target.
+3. Carry the order grain into the column description / Spotter instructions for every window
+   that is emitted, since ThoughtSpot cannot enforce Snowflake's required-dimension rule — and
+   consider the same default-skip + opt-in flag as BL-322 for `ROWS` frames.
+4. Fix BL-242 (fixed partition) in the same pass — same function.
+
+**Verify.** Extend the ts-model-parity metric matrix (three-sided; built for BL-322) with a
+Snowflake Semantic View pair so each mapping is number-matched against Snowflake at its own
+grain and at every other grain before it ships.
+
+**Target:** next SF formula pass, with BL-242.
+
+---
+
+## ~~BL-324~~ — A Model's dependents do not list its Sets `Tier 2` — DONE (2026-10-02)
+
+**Filed:** 2026-10-01.
+**Source:** live probes on se-thoughtspot, 2026-09-30 (Model *Dunder Mifflin*, `829a3344-…`; Set *Static Top 10*, `60a9794b-…`). Design: `docs/superpowers/specs/2026-10-01-ts-object-set-manager-design.md`.
+
+**Finding.** `ts metadata dependents <model>` on a Model that owns three reusable Sets returned
+Answers and a Liveboard but no `COHORT` bucket, so no `SET` rows. `ts-audit` discovers Sets this
+way (Step 3), so it finds none, and `check_h5` stays silent even once BL-302's second typed pass
+exists.
+
+**Fix.** Discover Sets by owner-filtered `LOGICAL_COLUMN` search confirmed by TML export
+(`ts_cli/sets/discover.py`), and have `check_h5` consume Set dependents fetched with
+`--type LOGICAL_COLUMN`. Closes BL-302 alongside.
+
+**Resolution (2026-10-02).** The owner-filtered search proved unworkable (a cluster-wide paged
+`LOGICAL_COLUMN` search did not finish in 2h45m — spec Appendix A). Discovery instead uses the
+internal per-Model cohort listing in `ts_cli/sets/discover.py`; `audit/context.py` feeds the
+Sets it finds, with dependents read as `LOGICAL_COLUMN`, to `check_h5`. BL-302 closed with it.
+Follow-up cost: BL-329.
+
+**Target:** with ts-object-set-manager v1.
+
+---
+
+## BL-325 — `scan-sets` misses blank-type Sets and times out `Tier 2`
+
+**Filed:** 2026-10-01.
+**Source:** live probes on se-thoughtspot, 2026-09-30 (Model *Dunder Mifflin*, `829a3344-…`; Set *Static Top 10*, `60a9794b-…`). Design: `docs/superpowers/specs/2026-10-01-ts-object-set-manager-design.md`.
+
+**Finding.** Three defects in `migrate/sets_scan.py` + `migrate/discover.py`:
+
+1. `is_cohort_row` matches `metadata_header.type` by `COHORT` prefix. Two of the three live
+   Sets had `type: ''` (only the newest read `COHORT_ADVANCED`), so they are not counted — a
+   Set-blocked Model reads clean, and a lift-and-shift drops its Sets silently, which is the
+   exact failure the scan exists to prevent.
+2. Discovery issues one unpaged cluster-wide `LOGICAL_COLUMN` search; on se-thoughtspot it timed
+   out three times (60s each). `subtypes: [COHORT_*]` cannot narrow it — the enum rejects it.
+3. `discover.column_dependents` called `_collect_dependents` with the default
+   `LOGICAL_TABLE`; a Set's dependents need `LOGICAL_COLUMN`, so every blocked Model's
+   Answer/Liveboard list was empty. Also: `publish_planning._cohort_columns` has the same
+   `type`-prefix defect as (1) — not yet switched.
+
+**Fix.** Switch `scan-sets` and `apply`'s self-scan to the shared `ts_cli/sets/discover.py`
+(one cohort-listing call per Model, membership by `cohortConfig`, never reads `type`; a failed
+listing reports the Model blocked, never clean), and query Set dependents as `LOGICAL_COLUMN`.
+The type-prefix helpers (`is_cohort_row`, `extract_cohort_columns`, `all_cohort_column_rows`)
+are deleted. `publish_planning._cohort_columns` remains open.
+
+**Status (2026-10-02).** Done for `scan-sets` and `apply`. **Remains:** switch
+`publish_planning._cohort_columns` to `ts_cli/sets/discover.py` — it still matches by the
+`type` prefix, so the publish planner can miss a blank-type Set.
+
+**Target:** with ts-object-set-manager v1 (scan-sets/apply); next ts-publish pass (`publish_planning`).
+
+---
+
+## BL-326 — Set MODIFY without Model access fails on save `Tier 2`
+
+**Filed:** 2026-10-01.
+**Source:** live probes on se-thoughtspot, 2026-09-30 (Model *Dunder Mifflin*, `829a3344-…`; Set *Static Top 10*, `60a9794b-…`). Design: `docs/superpowers/specs/2026-10-01-ts-object-set-manager-design.md`.
+
+**Finding.** `security/metadata/share` granting MODIFY on a Set (`LOGICAL_COLUMN`) returns 204
+and reads back, and several principals can hold it. A non-admin user so granted, with no access
+to the Set's Model, gets a generic error on save in the UI.
+
+**Status.** **Parked by the user** — the cause is known to them. Not to be re-probed unprompted.
+ts-object-set-manager v1 reports edit grants as-is and does not judge them.
+
+**Target:** parked.
+
+---
+
+## BL-327 — ts-object-set-manager v2: act on the report `Tier 2`
+
+**Filed:** 2026-10-01. Design: `docs/superpowers/specs/2026-10-01-ts-object-set-manager-design.md` §10.
+
+**Scope.** From the v1 inventory, with backup and rollback via the dependency engine:
+delete `REVIEW_DELETE` Sets (needs ts-dependency-manager open item #11); convert
+`CANDIDATE_ANSWER` / `CANDIDATE_VIZ` Sets into the Answer's or visualization's `cohorts[]`
+(needs open items #14 and #16 resolved); revoke `UNEXPLAINED` grants (never `REQUIRED` or
+`DIRECT`). Each action after explicit confirmation.
+
+**Gate:** v2 must not act on CANDIDATE_* until a non-admin probe confirms
+`areInaccessibleDependentsReturned` semantics (open item #6). Liveboard-filter detection is no
+longer a gate: open items #4 (filter + viz) and #8 (filter only, 2026-10-02) both showed the
+filtering Liveboard listed as a Set dependent and the Set classified `KEEP_FILTER`.
+
+**Target:** fast follow to v1.
+
+---
+
+## BL-328 — ts-object-set-manager connection scope `Tier 2`
+
+**Filed:** 2026-10-01. Design: `docs/superpowers/specs/2026-10-01-ts-object-set-manager-design.md` §3.1.
+
+**Scope.** Select one or more connections and review all Models on them. Models carry no
+connection field, so resolve connection → tables (`metadata_header.dataSourceName`) → Models
+via table dependents, de-duplicating Models that span connections. **Parked by the user.**
+
+**Target:** parked.
+
+---
+
+## BL-329 — Audit H5 Set discovery exports Liveboards it never reads `Tier 2`
+
+**Filed:** 2026-10-02. Source: ts-object-set-manager v1 (BL-302/BL-324 fix).
+
+**Finding.** The audit H angle discovers Sets and their dependents through
+`ts_cli.sets.consumers.fetch_consumers` (`audit/context.py`). That function exports the TML of
+every Liveboard dependent of every Set, to find the visualizations and filters naming it —
+detail `check_h5` never reads (it needs only whether a Set has consumers). On a large estate
+that is one TML export per Set-using Liveboard per Set, which makes the audit materially slower.
+
+**Fix.** Add a lightweight consumers mode (dependents lookup only, no Liveboard export) and use
+it from the audit. Keep the hidden-dependents and failure signals: a failed lookup must still
+never read as "no consumers".
+
+**Target:** next ts-audit pass.
+
+---
+
+## BL-330 — `apply --sets-scan` does not check what the scan covered `Tier 2`
+
+**Filed:** 2026-10-02. **Source:** final-review fix-wave re-review of the
+ts-object-set-manager branch (PR #554) — pre-existing, not introduced there.
+
+**Finding.** `blocked_model_guids` (`ts_cli/migrate/sets_scan.py`) returns only the GUIDs a
+scan marked blocked. `apply` refuses a mapped Model only if its GUID is in that set. Nothing
+checks that the scan inspected that Model, or ran in the source Org: a valid scan of a
+different Org, or one with `scanned.models: 0` (live on DamianTest 2026-10-02), lets `apply`
+pass a Model that was never inspected. The pre-BL-325 marker check (both `discovery_notes`
+and `summary.models_incomplete` required) does not close this.
+
+**Fix.** Record the scanned Org and Model GUIDs in the scan file; in `apply`, refuse when a
+mapped source Model is not in the scan's covered set or the scan's Org differs from
+`--source-org`. Tests for both, plus a test that a covering scan is accepted.
+
+**Target:** next ts-migrate pass.

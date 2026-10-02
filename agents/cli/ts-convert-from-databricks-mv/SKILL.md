@@ -66,10 +66,11 @@ covering `source:`, dimensions, measures, windows, joins, and `filter:`):
   `group_aggregate()` formulas — always 3 arguments: `group_aggregate(expr, {query}, query_filters())`.
 - Cross-measure references (`MEASURE(name)`, `ANY_VALUE(dim)`) must be **inlined** as
   full expressions during TML import — `[name]` cross-references fail during import
-  (open-items #4). After import, users can simplify formulas in the ThoughtSpot UI.
+  (invariant **I9**, `../../shared/schemas/ts-model-conversion-invariants.md`). After import, users can simplify formulas in the ThoughtSpot UI.
 - **Duplicate column_id:** when the same physical column appears as both an ATTRIBUTE
   dimension and a MEASURE (e.g., `COUNT(col)`), convert the measure to a formula to
-  avoid the "unique column_id" import error (open-items #2).
+  avoid the "unique column_id" import error (invariant **I8**,
+  `../../shared/schemas/ts-model-conversion-invariants.md`).
 
 ---
 
@@ -415,6 +416,13 @@ conditional aggregates, LOD `group_aggregate` (3-arg with `query_filters()`),
 dimension/measure lands in `translated[]` or `skipped[]` with a reason —
 review both.
 
+> **MANDATORY (I7) — before classifying any dimension or measure expression as
+> untranslatable, open
+> [`../../shared/mappings/ts-databricks/ts-databricks-formula-translation.md`](../../shared/mappings/ts-databricks/ts-databricks-formula-translation.md)
+> and check its Databricks → ThoughtSpot (Reverse Direction) tables and the
+> Untranslatable Patterns list. Do not decide from syntax alone.**
+> See `../../shared/schemas/ts-model-conversion-invariants.md` (I7).
+
 **3. Review the output with the user:**
 
 - **`skipped[]`** — each entry needs a decision: accept the omission, or build
@@ -450,6 +458,21 @@ search-level pin and filter-aware of the model filter, reproducing both
 Databricks conditions in one formula. Every entry carrying a
 `lod_filter_asymmetry` annotation needs this judgment call made explicitly
 with the user.
+
+**Period comparisons are skipped by default (BL-322).** A `range: current` +
+`offset:` window (prior year / prior month) lands in `skipped[]`: ThoughtSpot has no
+formula that counts calendar periods the way the Metric View does, and the row-lag
+approximation returns NULL or a plausible wrong number at any grain other than the
+window's own. Tell the user which measures were skipped and why. Only if they will
+query each one exclusively at its own grain, re-run translate-formulas with
+`--allow-row-lag`, and write that restriction into the measure's description.
+
+**Scalar-cap and date-filter caveats (2026-09-28, BL-316).** Surface every
+`cap_assumption` annotation: a scalar subquery used inside a windowed measure is
+emitted as `add_days ( today ( ) , -1 )` because ThoughtSpot cannot nest
+`group_aggregate` in `moving_sum` — the numbers match only while the source is loaded
+through yesterday. And tell the user that every LAG (`one_row_per_period`) returns
+NULL when a query's date filter excludes the prior period.
 
 **Deferred grains note (C8).** The `range: current` + `offset: -N <unit>`
 row-relative `LAG(N)` mapping is live-verified at month grain (`N=1`) only;
@@ -835,6 +858,10 @@ ThoughtSpot and Databricks profiles. Do not re-authenticate between views.
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.15.0 | 2026-09-28 | **Period comparisons are no longer translated by default (ts-cli v0.151.0, BL-322).** `range: current` + `offset:` windows went to `moving_sum ( m , N , -N , order )`, a row-lag that is exact only when the query is grouped by the window's own order dimension with every period present. Measured against Databricks with the ts-model-parity metric matrix on a 136-measure budget/forecast MV: at a coarser grain it returns NULL, at a finer grain a plausible wrong number (`py_monthly` by date = the value 12 days back), and with a gap a silently shifted period. They now land in `skipped[]` with the reason; `--allow-row-lag` restores the approximation with a `row_lag_approximation` annotation. Coverage matrix #37/#80/#81 and new limitation L14. |
+| 1.14.0 | 2026-09-28 | **Budget/forecast Metric Views convert end to end (ts-cli v0.149.0, BL-315/BL-316).** (1) **Fix — a day-grain window `offset:` was dropped silently:** `range: current` + `offset: -364 day` ordered by a raw date became `last_value(…)`, so "prior year" returned this year's value; it is now the `moving_sum` LAG. (2) **New mappings**, each number-matched against Databricks: a whole-table scalar subquery over the MV's own source (`(SELECT MAX(dt) FROM <source> WHERE …)`) → `group_aggregate(…, {}, {})`; `NOT IN`; `FILTER (WHERE …)` anywhere in an expression; `SUM(SUM(x)) OVER ()`; week-grain / date-shifted order dimensions (ordered by the dimension's formula); windows on ratio measures. (3) **Two new caveats surfaced at Step 10:** a LAG returns NULL when the query's date filter excludes the prior period (`one_row_per_period` text), and a scalar cap inside a window is emitted as `today() - 1` (`cap_assumption`). Coverage matrix rows #80–#87, L13. Refused rather than approximated (each lands in `skipped[]` with a reason): a scalar subquery on an MV with a global `filter:`, a correlated scalar subquery, `MAX` of anything but the window's order date inside a window, a nested aggregate in a window, `NOT IN` with a `NULL`, and `SUM(SUM(a)/SUM(b)) OVER ()`. |
+| 1.13.2 | 2026-09-22 | **Two dangling open-item citations repointed (audit 5.3 class).** The cross-reference inlining rule cited `open-items #4` and the duplicate-`column_id` rule cited `open-items #2`; this skill's open-items.md has only `#1`, so both resolved to nothing. Both claims are in fact invariants — **I9** and **I8** — and now cite those. Caught by the new `check_open_item_citations.py`. |
+| 1.13.1 | 2026-09-22 | **I7 untranslatable gate added.** Step 6 surfaced the translator's `skipped[]` list for a proceed/omit decision with no instruction to open [ts-databricks-formula-translation.md](../../shared/mappings/ts-databricks/ts-databricks-formula-translation.md) first, so an expression with a documented ThoughtSpot equivalent could be dropped on syntax recognition alone. Now gated by `check_i7_gate.py`, which requires the literal `MANDATORY (I7)` marker in a blockquote citing this skill's own dialect mapping and the invariants doc (2026-09-22 audit finding 9.3). |
 | 1.13.0 | 2026-09-02 | **BL-232 — column descriptions reached the TML at the wrong nesting level and were silently discarded on import (ts-cli v0.136.0).** An MV's `comment:` was written to `columns[].properties.description`, but ThoughtSpot expects `description` as a **sibling of `name`** and a Model import **silently ignores unknown keys inside `properties`** — so the TML linted clean, imported with `status_code OK`, and the descriptions were gone. Live-caught 2026-09-02 converting `dunder_mifflin_sales_mv`: 19 of 19 descriptions sent, 0 stored; relocating them to the column root and re-importing the same GUID restored all 19. Synonyms were unaffected because they were already placed correctly two lines away. This mattered most for Spotter, which reads column descriptions as AI context. The reverse leg (`build-mv`) had the mirror-image bug — it *read* `properties.description`, so a genuine ThoughtSpot Model's descriptions never reached an emitted MV `comment:`; the two cancelled out in a TS→MV→TS round-trip, which is how both survived. Worked examples corrected. |
 | 1.12.2 | 2026-08-26 | Use `ts metadata search --connection` instead of hand-filtering `dataSourceName`; the old instruction said **equals** where the CLI casefolds (finding 11.1). |
 | 1.12.1 | 2026-08-26 | Carry BL-074's prompt-batching rule — ask one question at a time for **dependent** decisions, batch **independent** ones. The rule reached 13 skills but omitted the four conversion skills, which are the most interactive in the repo by ask-count (finding 14.6). A `check_patterns` rule now enforces it above a question-count threshold. |

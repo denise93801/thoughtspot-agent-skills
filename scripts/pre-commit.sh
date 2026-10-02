@@ -133,6 +133,13 @@ if echo "$STAGED" | grep -q '\.py$'; then
   run_check "module health"      "tools/validate/check_module_health.py --root $REPO_ROOT --staged"
 fi
 
+# Duplicate module-level bindings on staged Python. Python keeps the LAST binding
+# silently, and two branches adding the same name in different hunks merge clean —
+# see the module docstring for the audit-check case this was built from.
+if echo "$STAGED" | grep -q '\.py$'; then
+  run_check "py redefinitions"   "tools/validate/check_python_redefinitions.py --root $REPO_ROOT --staged"
+fi
+
 # Line-count gate on staged ts_cli modules (BL-070) — warn >500, fail >1000.
 # Complements the complexity ratchet: long-but-simple files slip past radon.
 if echo "$STAGED" | grep -q '^tools/ts-cli/ts_cli/.*\.py$'; then
@@ -287,6 +294,21 @@ if echo "$STAGED" | grep -qE '(^agents/cli/ts-convert-.*/SKILL\.md|tools/validat
   run_check "no inline tml gate" "tools/validate/check_no_inline_tml_gate.py --root $REPO_ROOT"
 fi
 
+# I7 untranslatable gate — every conversion skill must tell the model to open its
+# formula-translation reference before calling an expression untranslatable. Covers
+# BOTH runtimes (CoCo executes the doc, so the gate matters there too). Runs when any
+# convert skill or the validator changes.
+if echo "$STAGED" | grep -qE '(^agents/(cli|coco-snowsight)/ts-convert-.*/SKILL\.md|tools/validate/check_i7_gate\.py)'; then
+  run_check "i7 gate"            "tools/validate/check_i7_gate.py --root $REPO_ROOT"
+fi
+
+# Open-item citations must resolve. `check_open_items` grades the items; nothing
+# resolved a REFERENCE to one, so a citation could name an item that never existed
+# and stay silent (audit 5.3: five such citations in ts-dependency-manager alone).
+if echo "$STAGED" | grep -qE '(^agents/.*\.(md|py)$|tools/validate/check_open_item_citations\.py)'; then
+  run_check "open-item citations" "tools/validate/check_open_item_citations.py --root $REPO_ROOT"
+fi
+
 # No inline Python TML assembly — CLI convert skills must use `ts tableau build-model`,
 # not hand-rolled Python heredocs for formula import. Runs when a convert skill or the
 # validator changes.
@@ -297,7 +319,7 @@ fi
 # No inline requests/urllib — Claude skills use the `ts` CLI, never direct
 # requests/urllib calls to a ThoughtSpot endpoint (.claude/rules/ts-cli.md; audit
 # finding 5.2). Runs when a CLI/Claude SKILL.md or the validator changes.
-if echo "$STAGED" | grep -qE '(^agents/(cli|claude)/.*/SKILL\.md|tools/validate/check_no_inline_requests\.py)'; then
+if echo "$STAGED" | grep -qE '(^agents/(cli|claude)/.*\.(md|py)$|tools/validate/check_no_inline_requests\.py)'; then
   run_check "no inline requests" "tools/validate/check_no_inline_requests.py --root $REPO_ROOT"
 fi
 

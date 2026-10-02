@@ -16,6 +16,9 @@ from ts_cli.model_builder import (
     fix_double_aggregation,
 )
 from ts_cli.tml_common import extract_imported_guid  # noqa: F401 — moved (BL-063 PR 5)
+from ts_cli.tableau.naming import (  # noqa: F401 — moved (SCAL-339750), re-exported
+    disambiguate_sql_view_names,
+)
 
 _CSQ_SUFFIX = re.compile(r"\s*\(Custom SQL Query\d*\)\s*$")
 _CSQ_IN_REF = re.compile(r"\[([^\]]+?)\s+\(\s*Custom SQL Query\d*\)\]")
@@ -400,6 +403,19 @@ def build_generated_tables_map(
     for sv in sql_views or []:
         result[sv["name"]] = {c["name"] for c in sv.get("columns", [])}
     return result
+
+
+def join_warning_entries(ds: dict) -> list[dict]:
+    """`validation_warnings` entries for the joins `_extract_joins` skipped.
+
+    Carries `kind` because the rest of that list is per-FORMULA —
+    `validate_pre_import` returns `{name: <formula name>, warnings}` — while
+    this is per-datasource: same shape, different meaning. The migration report
+    selects on the marker rather than matching warning text, which changes.
+    """
+    if not ds.get("join_warnings"):
+        return []
+    return [{"kind": "join", "name": ds["name"], "warnings": ds["join_warnings"]}]
 
 
 def build_blend_plan(blend_graph: dict, datasources: list[dict]) -> dict:
