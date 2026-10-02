@@ -447,6 +447,14 @@ If `skipped_formulas` (no table ref) or `unmapped_properties` is non-empty,
 tell the user these were intentional omissions (not bugs) and point to
 [references/open-items.md](references/open-items.md) #9 for unmapped properties.
 
+> **MANDATORY (I7) — before describing any formula or aggregation as untranslatable to dbt, open
+> [`../../shared/mappings/ts-dbt/ts-dbt-formula-translation.md`](../../shared/mappings/ts-dbt/ts-dbt-formula-translation.md)
+> and check its **ThoughtSpot → dbt** section (not the dbt → ThoughtSpot side). Formulas are
+> carried verbatim as `ts_formula`, so the only skip is a formula with no `[TABLE::COL]`
+> reference; and with `--semantic-models`, `STD_DEVIATION` / `VARIANCE` / `NONE` measures
+> are not valid MetricFlow. Do not decide from syntax alone.**
+> See `../../shared/schemas/ts-model-conversion-invariants.md` (I7).
+
 ---
 
 ### Step 8a: Commit and push

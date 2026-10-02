@@ -99,6 +99,20 @@ clean.
 so an unanswered #2 no longer costs anyone a broken project. The question of
 whether ThoughtSpot reads it stays open, and the flag is how to test it.
 
+**2026-10-02 — two more dbt-core failures, tested locally.** A scratch project
+parsed with dbt-core 1.12.5 (dbt-snowflake 1.12.1), time spine supplied so only
+the field under test varied, with a nonsense `agg: banana` as the control:
+
+| Finding | Result |
+|---|---|
+| `agg` values this file can emit | `sum` `average` `count` `count_distinct` `min` `max` parse. `std_deviation` / `variance` / `none` (from a Model column aggregated `STD_DEVIATION` / `VARIANCE` / `NONE`) fail `Invalid enum value … in enum AggregationType` — identical to the control. |
+| No `agg_time_dimension` | The exporter sets none, and a measure without one fails `Semantic Manifest validation failed` ("Aggregation time dimension for measure … is not set"). |
+
+dbt Fusion 2.0.6 accepts every one of these, `banana` included, and records no
+semantic models in its manifest — it does not validate the legacy spec, so a
+clean Fusion parse proves nothing about this file. Both failures stay behind
+`--semantic-models` with the time-spine one; fix them if #2 is ever answered yes.
+
 ---
 
 ## #3 — Formula/calculated column translation — VERIFIED live 2026-09-09

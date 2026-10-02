@@ -107,14 +107,13 @@ PLATFORM_DOC_OVERRIDES: dict[str, tuple[str, ...] | None] = {
     # compare. `resolve_code_files` already returns no files for it; this entry
     # records that the absence is intentional rather than an unresolved platform.
     "looker": None,
-    # dbt has no source formula language to map from, so there is no
-    # translation catalog to keep in sync. `ts_formula` carries ThoughtSpot
-    # formula text VERBATIM in both directions -- nothing is translated. The
-    # only generated formulas come from MetricFlow metrics, and those map by
-    # AGGREGATION TYPE (simple/ratio/derived -> sum, average, safe_divide, ...),
-    # not by function name; every name emitted is a standard ThoughtSpot
-    # aggregation already catalogued for the other converters.
-    "dbt": None,
+    # dbt has no source formula language: `ts_formula` carries ThoughtSpot formula
+    # text VERBATIM in both directions. The only generated formulas come from
+    # MetricFlow metrics, mapped by AGGREGATION TYPE (`_AGG_TO_TS` in
+    # `ts_cli/dbt_metricflow.py`). Until 2026-10-02 this was `None` (no doc); the
+    # I7 gate needs one, so ts-dbt/ now records both directions and is compared
+    # here like any other platform's.
+    "dbt": ("ts-dbt",),
 }
 
 # A ThoughtSpot function name: lowercase, may contain `_` or a space

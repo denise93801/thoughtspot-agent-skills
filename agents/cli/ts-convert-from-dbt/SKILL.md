@@ -860,6 +860,14 @@ reports on stderr `MetricFlow: N metric(s) translated to formulas — …`, any
 meta only. Metrics need a fresh job run to appear in the manifest, like every
 other schema.yml change.
 
+> **MANDATORY (I7) — before telling the user a MetricFlow metric cannot be translated, open
+> [`../../shared/mappings/ts-dbt/ts-dbt-formula-translation.md`](../../shared/mappings/ts-dbt/ts-dbt-formula-translation.md)
+> and check its **dbt → ThoughtSpot** "Reported as unmapped — and what to offer instead"
+> table (not the ThoughtSpot → dbt side). Several unmapped metrics — `median`, `sum_boolean`,
+> filtered and cumulative metrics — have a manual ThoughtSpot formula to offer as a
+> `ts_formula`. Do not decide from syntax alone.**
+> See `../../shared/schemas/ts-model-conversion-invariants.md` (I7).
+
 `ts_rls_rules` in schema.yml are applied by `build-model` automatically — for each
 model that carries the tag, `build-model` exports the ThoughtSpot Table TML, patches
 the `rls_rules` block, and re-imports. This requires a fresh job run if `ts_rls_rules`

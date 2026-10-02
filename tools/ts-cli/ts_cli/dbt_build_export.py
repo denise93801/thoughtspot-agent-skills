@@ -74,8 +74,10 @@ version of this module):
 
 Formula (calculated) columns are NOT translated in either artifact — dbt's metric
 taxonomy is a structurally different problem from SQL-text translation and needs
-its own reference file (ts-dbt-formula-translation.md, not yet written). Every
-formula column is reported in ``skipped_formulas``, never silently dropped.
+its own reference file
+(``agents/shared/mappings/ts-dbt/ts-dbt-formula-translation.md``). A formula
+column with no ``[TABLE::COL]`` reference is reported in ``skipped_formulas``,
+never silently dropped.
 
 Formula round-trip: ``build_dbt_export`` writes formulas to ``schema.yml`` as
 ``ts_formula`` meta config entries so they are version-controlled in the dbt project
