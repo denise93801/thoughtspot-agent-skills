@@ -39,6 +39,7 @@ from __future__ import annotations
 import os
 import re
 
+from ts_cli.dbt.node_paths import table_name
 from ts_cli.dbt.tags import _formula_id
 
 _AGG_TO_TS: dict[str, str] = {
@@ -67,8 +68,8 @@ def semantic_models_in_scope(manifest: dict, model_path: str) -> dict[str, dict]
     """Semantic models whose backing dbt model lives in ``model_path``.
 
     Returns ``{semantic_model_name: {"uid", "table", "sm"}}`` where ``table`` is
-    the ThoughtSpot Table name (dbt model name upper-cased — the same convention
-    :func:`ts_cli.dbt_build_export.build_model_tml_from_manifest` uses).
+    the ThoughtSpot Table name (`alias or name` upper-cased — `node_paths.table_name`,
+    the convention every reader shares).
     """
     nodes = manifest.get("nodes", {})
     out: dict[str, dict] = {}
@@ -81,7 +82,7 @@ def semantic_models_in_scope(manifest: dict, model_path: str) -> dict[str, dict]
             continue
         if os.path.dirname(node.get("original_file_path", "")) != model_path:
             continue
-        out[sm["name"]] = {"uid": uid, "table": node["name"].upper(), "sm": sm}
+        out[sm["name"]] = {"uid": uid, "table": table_name(node), "sm": sm}
     return out
 
 

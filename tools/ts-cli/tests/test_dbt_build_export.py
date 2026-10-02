@@ -1316,8 +1316,11 @@ class TestManifestTableLocationsAndFqns:
     def test_locations_use_alias_then_name_and_skip_non_models(self):
         from ts_cli.dbt_build_export import manifest_table_locations
         locs = manifest_table_locations(self._MANIFEST)
-        assert set(locs) == {"BARBERS", "SERVICES"}
-        assert locs["BARBERS"] == {"database": "DL_TEST", "schema": "dbt_dlee_prod", "db_table": "barbers_v"}
+        # Keyed by the Table name ThoughtSpot registers — the alias — so the keys
+        # match model_tables[] names. Keying by the model name ("BARBERS") named a
+        # Table that does not exist (PR #506 review, blocker 2).
+        assert set(locs) == {"BARBERS_V", "SERVICES"}
+        assert locs["BARBERS_V"] == {"database": "DL_TEST", "schema": "dbt_dlee_prod", "db_table": "barbers_v"}
         assert locs["SERVICES"]["db_table"] == "services"
 
     def test_apply_table_fqns_pins_resolved_only(self):
@@ -2155,3 +2158,96 @@ class TestSemanticModelsAreOptIn:
         for kw in ({}, {"emit_semantic_models": True}):
             files, info = self._files(**kw)
             assert info["files_written"] == sorted(files.keys())
+
+
+# ---------------------------------------------------------------------------
+# PR #506 review, blocker 2: both readers must name an aliased model's Table by
+# its alias. The manifest reader (ts dbt build-model, the dbt Cloud path) used
+# the model name, so it emitted model_tables[] for Tables that do not exist and
+# keyed RLS to the wrong one, while the schema.yml reader used the alias.
+# ---------------------------------------------------------------------------
+
+class TestAliasedProjectReadersAgree:
+    PATH = "models/staging"
+
+    _RLS = [{"name": "region", "expr": "[p::REGION] = ts_groups",
+             "table_paths": [{"id": "p", "table": "APPOINTMENTS", "columns": ["REGION"]}]}]
+
+    def _manifest(self):
+        def model(name, alias, cols, meta=None):
+            return {"resource_type": "model", "name": name, "alias": alias,
+                    "database": "DB", "schema": "S",
+                    "unique_id": f"model.p.{name}",
+                    "original_file_path": f"{self.PATH}/{name}.sql",
+                    "config": {"meta": meta or {}},
+                    "columns": {c: {"name": c, "config": {"meta": {"ts_column_type": "attribute"}}}
+                                for c in cols}}
+        return {"nodes": {
+            "model.p.stg_appointments": model(
+                "stg_appointments", "APPOINTMENTS", ["BARBER_ID", "REGION"],
+                meta={"ts_rls_rules": self._RLS}),
+            "model.p.stg_barbers": model("stg_barbers", "BARBERS", ["BARBER_ID"]),
+            "test.p.rel": {
+                "resource_type": "test",
+                "original_file_path": "models/schema.yml",
+                "attached_node": "model.p.stg_appointments",
+                "test_metadata": {"name": "relationships", "kwargs": {
+                    "column_name": "BARBER_ID", "to": "ref('stg_barbers')", "field": "BARBER_ID",
+                    "model": "{{ get_where_subquery(ref('stg_appointments')) }}"}},
+                "config": {"meta": {"ts_join_name": "appt_to_barber"}},
+            },
+        }}
+
+    def _schema_yml(self):
+        def col(name, rel_to=None):
+            c = {"name": name, "config": {"meta": {"ts_column_type": "attribute"}}}
+            if rel_to:
+                c["data_tests"] = [{"relationships": {
+                    "arguments": {"to": f"ref('{rel_to}')", "field": name},
+                    "config": {"meta": {"ts_join_name": "appt_to_barber"}}}}]
+            return c
+        return yaml.safe_dump({"version": 2, "models": [
+            {"name": "stg_appointments", "config": {"alias": "APPOINTMENTS"},
+             "columns": [col("BARBER_ID", "stg_barbers"), col("REGION")]},
+            {"name": "stg_barbers", "config": {"alias": "BARBERS"},
+             "columns": [col("BARBER_ID")]},
+        ]}, sort_keys=False)
+
+    def test_manifest_reader_names_tables_by_alias(self):
+        from ts_cli.dbt.manifest import build_model_tml_from_manifest
+        model = build_model_tml_from_manifest(self._manifest(), {}, self.PATH, "M", metrics=False)["model"]
+        tables = {mt["name"]: mt for mt in model["model_tables"]}
+        assert set(tables) == {"APPOINTMENTS", "BARBERS"}
+        [join] = tables["APPOINTMENTS"]["joins"]
+        assert join["with"] == "BARBERS"
+        assert join["on"] == "[APPOINTMENTS::BARBER_ID] = [BARBERS::BARBER_ID]"
+        assert {c["column_id"].split("::")[0] for c in model["columns"]} == {"APPOINTMENTS", "BARBERS"}
+
+    def test_both_readers_produce_the_same_tables_and_joins(self):
+        from ts_cli.dbt.manifest import build_model_tml_from_manifest
+        from ts_cli.dbt.model_from_schema_yml import build_model_tml_from_schema_yml
+
+        def shape(model):
+            return ({mt["name"] for mt in model["model_tables"]},
+                    sorted((mt["name"], j["with"], j["on"])
+                           for mt in model["model_tables"] for j in mt.get("joins", [])),
+                    sorted(c["column_id"] for c in model["columns"] if "column_id" in c))
+
+        from_manifest = build_model_tml_from_manifest(
+            self._manifest(), {}, self.PATH, "M", metrics=False)["model"]
+        from_schema = build_model_tml_from_schema_yml(self._schema_yml(), "M")["model"]
+        assert shape(from_manifest) == shape(from_schema)
+
+    def test_rls_and_locations_are_keyed_by_alias(self):
+        from ts_cli.dbt.manifest import extract_model_rls_from_manifest, manifest_table_locations
+        assert set(extract_model_rls_from_manifest(self._manifest(), self.PATH)) == {"APPOINTMENTS"}
+        locs = manifest_table_locations(self._manifest())
+        assert set(locs) == {"APPOINTMENTS", "BARBERS"}
+        assert locs["APPOINTMENTS"]["db_table"] == "APPOINTMENTS"
+
+    def test_metricflow_semantic_model_uses_the_alias(self):
+        from ts_cli.dbt_metricflow import semantic_models_in_scope
+        manifest = self._manifest()
+        manifest["semantic_models"] = {"semantic_model.p.appts": {
+            "name": "appts", "depends_on": {"nodes": ["model.p.stg_appointments"]}}}
+        assert semantic_models_in_scope(manifest, self.PATH)["appts"]["table"] == "APPOINTMENTS"

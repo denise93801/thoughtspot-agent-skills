@@ -14,7 +14,7 @@ import os
 import re
 from collections import defaultdict
 
-from .node_paths import model_in_path, join_test_in_path
+from .node_paths import model_in_path, join_test_in_path, ref_tables, table_name as _node_table_name
 from .tags import (
     _AGG_MAP,
     _COL_TYPE_MAP,
@@ -55,7 +55,7 @@ def extract_model_rls_from_manifest(manifest: dict, model_path: str) -> dict[str
         if not ts_rls:
             continue
 
-        table_name = model_name.upper()
+        table_name = _node_table_name(node)
         table_paths_out: list[dict] = []
         rules_out: list[dict] = []
         seen_path_ids: set[str] = set()
@@ -92,7 +92,7 @@ def manifest_table_locations(manifest: dict) -> dict[str, dict]:
     for node in manifest.get("nodes", {}).values():
         if node.get("resource_type") != "model" or not node.get("name"):
             continue
-        out[node["name"].upper()] = {
+        out[_node_table_name(node)] = {
             "database": node.get("database") or "",
             "schema": node.get("schema") or "",
             "db_table": node.get("alias") or node["name"],
@@ -147,7 +147,10 @@ def build_model_tml_from_manifest(
         if model_in_path(node, model_path):
             model_nodes[node["name"]] = node
 
-    dbt_to_table: dict[str, str] = {n: n.upper() for n in model_nodes}
+    dbt_to_table: dict[str, str] = {n: _node_table_name(node) for n, node in model_nodes.items()}
+    # A join's ref('name') -> the Table that model materialises, for every model
+    # in the manifest (a join target may sit outside model_path).
+    ref_to_table = ref_tables(manifest)
 
     # Collect relationship tests with ts_join_* meta in this directory
     joins_by_table: dict[str, list[dict]] = defaultdict(list)
@@ -173,8 +176,8 @@ def build_model_tml_from_manifest(
         if not src_m or not tgt_m:
             continue
 
-        source_table = src_m.group(1).upper()
-        target_table = tgt_m.group(1).upper()
+        source_table = ref_to_table.get(src_m.group(1), src_m.group(1).upper())
+        target_table = ref_to_table.get(tgt_m.group(1), tgt_m.group(1).upper())
         col_name = kwargs.get("column_name", "")
         right_field = kwargs.get("field", col_name)
 
@@ -234,7 +237,7 @@ def build_model_tml_from_manifest(
     inferred_columns: list[str] = []          # TABLE::COL typed from catalog.json, no ts_* meta
     catalog_nodes = (catalog or {}).get("nodes") or {}
     for dbt_name, node in model_nodes.items():
-        table_name = dbt_name.upper()
+        table_name = dbt_to_table[dbt_name]
         col_meta_by_table[table_name] = {}
         col_desc_by_table[table_name] = {}
         cat_cols = {k.upper(): v for k, v in

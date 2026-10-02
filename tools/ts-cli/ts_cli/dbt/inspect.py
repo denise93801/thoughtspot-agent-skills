@@ -21,7 +21,7 @@ import os
 import re
 from collections import defaultdict
 
-from .node_paths import model_in_path, join_test_in_path
+from .node_paths import model_in_path, join_test_in_path, table_name
 
 _REF_RE = re.compile(r"""ref\(['"]?([^'")]+)['"]?\)""")
 
@@ -221,7 +221,7 @@ def inspect_manifest(manifest: dict, model_path: str) -> dict:
             {
                 "name": n.get("name", ""),
                 "alias": n.get("alias") or n.get("name", ""),
-                "table": (n.get("alias") or n.get("name", "")).upper(),
+                "table": table_name(n),
                 "database": n.get("database") or "",
                 "schema": n.get("schema") or "",
             }

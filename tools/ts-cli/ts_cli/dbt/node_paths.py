@@ -33,6 +33,28 @@ from __future__ import annotations
 import os
 
 
+def table_name(node: dict) -> str:
+    """The ThoughtSpot Table name for a manifest model node: `alias or name`,
+    upper-cased.
+
+    `alias` is the relation dbt materialises, and ThoughtSpot registers the
+    Table under that name. Every reader must use this, not `name`: the manifest
+    reader used `name` while the schema.yml reader used the alias, so an aliased
+    project produced Model TML naming tables that do not exist and RLS keyed to
+    the wrong table (PR #506 review, blocker 2). It must agree with
+    `model_from_schema_yml._table_name_of`.
+    """
+    return str(node.get("alias") or node.get("name") or "").upper()
+
+
+def ref_tables(manifest: dict) -> dict:
+    """`{dbt model name: ThoughtSpot Table name}` for every model node, so a
+    `ref('name')` can be resolved to the Table it materialises — including a
+    join target outside the scoped directory."""
+    return {n["name"]: table_name(n) for n in manifest.get("nodes", {}).values()
+            if n.get("resource_type") == "model" and n.get("name")}
+
+
 def node_dir(node: dict) -> str:
     """Directory of a node's own source file."""
     return os.path.dirname(node.get("original_file_path", ""))
