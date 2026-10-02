@@ -362,6 +362,10 @@ ts metadata report <source>... --profile <name> [--format json|text|md] [--fast]
 
 `<source>` accepts a 36-char GUID, `DB.SCHEMA.TABLE`, or `DB.SCHEMA.TABLE.COLUMN`. `--fast` skips TML probes (dependents walk only). Default format is `json`.
 
+RLS rules and column security rules (CSR) are read from the source's **owning table** — for a column GUID, the table its metadata header's `owner` names. A whole-table source counts every rule on the table. A Model, or a column that belongs to a Model, cannot be checked this way (its rules live on base tables), so both rows report `checked: false`.
+
+`classification.aggregate.tag` is `STOP` when a rule is found, and `UNVERIFIED` (recommendation `BLOCKED_VERIFY_SECURITY_FIRST`) when the RLS or CSR check did not run — a report is never `SAFE`, `LOW`, `MEDIUM` or `HIGH` on an unchecked security row. Otherwise it is the highest per-dependent tag, or `SAFE` with no dependents.
+
 Output schema: defined in code at `tools/ts-cli/ts_cli/report/schema.py` (the `DependentEntry` / `RiskTag` dataclasses).
 
 ---

@@ -152,20 +152,27 @@ class TestBuildReportPropagatesProbeFailures:
         uuid = "baa451a6-02a0-42d1-8347-8cd4af13b505"
 
         # Call 1: resolve_source (GUID -> metadata/search, a LOGICAL_COLUMN hit)
+        # Call 1b: owner lookup (the column's table)
         # Call 2: walk_dependents_recursive (no dependents)
-        # Call 3: the primary TML probe export -> raises
-        # Call 4: SQL-views org-wide search (no dependents means no model docs,
+        # Call 3: the primary TML probe export of the table -> raises
+        # Call 4: CSR fetch on the table (succeeds, no rules)
+        # Call 5: SQL-views org-wide search (no dependents means no model docs,
         #   so this and custom-actions are the only later deep_active probes
         #   that still fire; both succeed here so they don't add extra warnings)
-        # Call 5: custom actions search
+        # Call 6: custom actions search
         client.post.side_effect = [
             _resp([{
                 "metadata_id": "g-1", "metadata_name": "Col",
                 "metadata_type": "LOGICAL_COLUMN",
-                "metadata_header": {"id": "g-1", "name": "Col"},
+                "metadata_header": {"id": "g-1", "name": "Col", "owner": "t-1"},
+            }]),
+            _resp([{  # owner lookup: t-1 is a table
+                "metadata_id": "t-1", "metadata_name": "T", "metadata_type": "LOGICAL_TABLE",
+                "metadata_header": {"id": "t-1", "name": "T", "type": "ONE_TO_ONE_LOGICAL"},
             }]),
             _resp([{"metadata_id": "g-1", "dependent_objects": {"dependents": {}}}]),
             RuntimeError("boom"),
+            _resp([]),
             _resp([]),
             _resp([]),
         ]
@@ -178,6 +185,8 @@ class TestBuildReportPropagatesProbeFailures:
             assert by_type[t]["found"] == 0
         assert len(out["warnings"]) == 1
         assert "boom" in out["warnings"][0]
+        # RLS did not run, so the report cannot be SAFE.
+        assert out["classification"]["aggregate"]["tag"] == "UNVERIFIED"
 
     @patch("ts_cli.report.ThoughtSpotClient")
     def test_monitor_probe_exception_sets_checked_false_and_warning(self, MockClient):
@@ -185,21 +194,26 @@ class TestBuildReportPropagatesProbeFailures:
         MockClient.return_value = client
         uuid = "baa451a6-02a0-42d1-8347-8cd4af13b505"
 
-        # Call 1: resolve_source (LOGICAL_COLUMN hit)
+        # Call 1: resolve_source (LOGICAL_COLUMN hit) + 1b: owner lookup
         # Call 2: walk_dependents_recursive -> one Liveboard dependent (depth 1,
         #   max_depth=1 so the walk stops before re-querying it)
         # Call 3: the primary TML probe export -> succeeds (model doc has no
         #   "id" in info, so the per-model variables/business-terms/cascade
         #   phase skips it — no extra calls from that phase)
         # Call 4: the Monitor-alerts Liveboard export -> raises
-        # Call 5: SQL-views org-wide search (empty)
-        # Call 6: custom actions search (empty)
-        # Call 7: scheduled reports search, scoped to lb-1 (empty)
+        # Call 5: CSR fetch on the table (empty)
+        # Call 6: SQL-views org-wide search (empty)
+        # Call 7: custom actions search (empty)
+        # Call 8: scheduled reports search, scoped to lb-1 (empty)
         client.post.side_effect = [
             _resp([{
                 "metadata_id": "g-1", "metadata_name": "Col",
                 "metadata_type": "LOGICAL_COLUMN",
-                "metadata_header": {"id": "g-1", "name": "Col"},
+                "metadata_header": {"id": "g-1", "name": "Col", "owner": "t-1"},
+            }]),
+            _resp([{  # owner lookup: t-1 is a table
+                "metadata_id": "t-1", "metadata_name": "T", "metadata_type": "LOGICAL_TABLE",
+                "metadata_header": {"id": "t-1", "name": "T", "type": "ONE_TO_ONE_LOGICAL"},
             }]),
             _resp([{
                 "metadata_id": "g-1",
@@ -211,6 +225,7 @@ class TestBuildReportPropagatesProbeFailures:
             }]),
             _resp([{"info": {"type": "model"}, "edoc": "column_alias:\n  columns: []\n"}]),
             RuntimeError("monitor export exploded"),
+            _resp([]),
             _resp([]),
             _resp([]),
             _resp([]),

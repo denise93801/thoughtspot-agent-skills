@@ -33,6 +33,17 @@ def find_rls_column_uses(table_tml: dict, target_columns: Iterable[str]) -> List
     return hits
 
 
+def list_rls_rules(table_tml: dict) -> List[dict]:
+    """Every RLS rule on a table, as hits — for a whole-table source, where
+    removing the table removes all of them. Same hit shape as
+    find_rls_column_uses, with `column` naming each column the rule's paths list.
+    """
+    rls = (table_tml.get("table") or {}).get("rls_rules") or {}
+    path_cols = sorted({c for p in rls.get("table_paths", []) for c in p.get("column", [])})
+    return [{"rule_name": rule.get("name"), "path_id": None, "column": ", ".join(path_cols),
+             "expr": rule.get("expr", "")} for rule in rls.get("rules", [])]
+
+
 def find_alert_column_uses(
     alert_tml: dict,
     target_columns: Iterable[str],

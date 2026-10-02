@@ -20,6 +20,18 @@ from .classifier import (
 )
 
 
+# ThoughtSpotClient ends a non-2xx response with SystemExit(1) (a BaseException),
+# so a probe guarded by `except Exception` let an HTTP error abort the whole
+# report instead of marking its row unchecked (PR #506 review, blocker 6).
+_PROBE_ERRORS = (Exception, SystemExit)
+
+
+def _probe_error_text(exc: BaseException) -> str:
+    if isinstance(exc, SystemExit):
+        return "API request failed (HTTP error details on stderr)"
+    return str(exc)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -275,52 +287,128 @@ class _ProbeState:
         self.schedules_probe_error: Optional[str] = None
 
 
-def _run_primary_probes(state, client, source, target_cols, physical_column) -> None:
-    """Primary TML export: RLS, alias, join, AI-surface, formula, model-filter.
+_TABLE_SUBTYPE = "ONE_TO_ONE_LOGICAL"
 
-    One export call covers all six — export_associated=True pulls in every
-    associated Table/Model/column-alias doc alongside the source itself.
+
+def _security_scope(source) -> dict:
+    """Where this source's RLS rules and column security rules live, if anywhere checkable.
+
+    Both are defined on a TABLE: RLS in the table TML's `rls_rules`, CSR in its
+    `column_security_rules` document. Returns {"kind", "table_guid", "export",
+    "reason"}:
+      - "column": a column on a table — check the table's rules for that column
+      - "table":  a whole table — every rule on it goes with it
+      - "unsupported": no table to check (a Model, a Model's column, or a column
+        whose owner did not resolve); `reason` says why, and both rows report
+        unchecked
+    `export` is the {identifier, type} the primary TML export asks for. The export
+    API rejects LOGICAL_COLUMN (HTTP 400, live-verified 2026-10-02), so a column
+    source exports its owning object, never itself.
     """
-    from . import tml_probes
+    if source.type == "LOGICAL_COLUMN":
+        parent = source.parent
+        if not parent:
+            return {"kind": "unsupported", "table_guid": None, "export": None,
+                    "reason": "the column's owning table could not be resolved"}
+        export = {"identifier": parent["guid"], "type": "LOGICAL_TABLE"}
+        if parent.get("subtype") == _TABLE_SUBTYPE:
+            return {"kind": "column", "table_guid": parent["guid"], "export": export, "reason": None}
+        return {"kind": "unsupported", "table_guid": None, "export": export,
+                "reason": (f"the column belongs to {parent.get('name')!r} "
+                           f"({parent.get('subtype') or 'unknown type'}), not a table; RLS and CSR are "
+                           "defined on its base tables — run the report on the base table's column")}
+    export = {"identifier": source.guid, "type": source.type}
+    if source.type == "LOGICAL_TABLE" and source.subtype == _TABLE_SUBTYPE:
+        return {"kind": "table", "table_guid": source.guid, "export": export, "reason": None}
+    return {"kind": "unsupported", "table_guid": None, "export": export,
+            "reason": (f"{source.name!r} is a {source.subtype or source.type}, not a table; RLS and CSR "
+                       "are defined on its base tables — review their rules before removing it")}
+
+
+def _export_targets(scope: dict, dependents: list) -> List[dict]:
+    """The scope's object plus every LOGICAL_TABLE dependent (the Models/Views built
+    on it). export_associated pulls in what an object is built FROM, never what is
+    built on it, so without the dependents a table column's export holds no Model
+    doc and the join / AI-surface / formula / model-filter rows would read
+    "checked, none found" from a document set that could not contain a hit."""
+    targets = [scope["export"]]
+    seen = {scope["export"]["identifier"]}
+    for dep in dependents:
+        if dep.type == "LOGICAL_TABLE" and dep.guid not in seen:
+            seen.add(dep.guid)
+            targets.append({"identifier": dep.guid, "type": "LOGICAL_TABLE"})
+    return targets
+
+
+def _unique_docs(docs: list):
+    """Yield (info_type, filename, doc_guid, parsed) once per exported document.
+    Several requested objects can share an associated doc (two Models over one
+    table); counting it twice would double every hit in it."""
     import yaml
 
+    seen = set()
+    for doc in docs or []:
+        edoc_str = doc.get("edoc") or ""
+        if not edoc_str:
+            continue
+        info = doc.get("info") or {}
+        info_type = (info.get("type") or "").upper()
+        filename = (info.get("filename") or "").lower()
+        doc_guid = info.get("id")
+        key = (doc_guid, info_type, filename)
+        if doc_guid and key in seen:
+            continue
+        seen.add(key)
+        yield info_type, filename, doc_guid, (yaml.safe_load(edoc_str) or {})
+
+
+def _probe_primary_doc(state, scope, info_type, filename, doc_guid, parsed,
+                       target_cols, physical_column) -> None:
+    from . import tml_probes
+
+    if "COLUMN_ALIAS" in info_type or "alias" in filename:
+        state.alias_hits.extend(_tag_hits(
+            tml_probes.find_alias_column_uses(parsed, target_cols), doc_guid))
+    # RLS only from the scope's own table: the dependents' associated docs
+    # bring other base tables, where a same-named column is a different column.
+    if info_type in ("TABLE", "LOGICAL_TABLE") and doc_guid == scope["table_guid"]:
+        rls = (tml_probes.list_rls_rules(parsed) if scope["kind"] == "table"
+               else tml_probes.find_rls_column_uses(parsed, target_cols))
+        state.rls_hits.extend(_tag_hits(rls, doc_guid))
+    if info_type in ("MODEL", "LOGICAL_MODEL", "WORKSHEET"):
+        state.join_hits.extend(_tag_hits(
+            tml_probes.find_join_column_uses(parsed, target_cols), doc_guid))
+        state.ai_hits.extend(_tag_hits(
+            tml_probes.find_ai_surface_uses(parsed, target_cols), doc_guid))
+        if physical_column:
+            state.formula_hits.extend(_tag_hits(
+                tml_probes.find_formula_column_uses(parsed, physical_column), doc_guid))
+            state.model_filter_hits.extend(_tag_hits(
+                tml_probes.find_model_filter_column_uses(parsed, target_cols), doc_guid))
+            state.model_docs.append((doc_guid, parsed))
+
+
+def _run_primary_probes(state, client, scope, dependents, target_cols, physical_column) -> None:
+    """Primary TML export: RLS, alias, join, AI-surface, formula, model-filter —
+    one export call over _export_targets() covers all six."""
+    if scope["export"] is None:
+        state.primary_probe_ok = False
+        state.primary_probe_error = scope["reason"]
+        return
     try:
         resp = client.post("/api/rest/2.0/metadata/tml/export", json={
-            "metadata": [{"identifier": source.guid, "type": source.type}],
+            "metadata": _export_targets(scope, dependents),
             "export_associated": True,
             "export_fqn": True,
             "edoc_format": "YAML",
             "export_options": {"export_with_column_aliases": True},
         })
-        for doc in (resp.json() or []):
-            edoc_str = doc.get("edoc") or ""
-            if not edoc_str:
-                continue
-            parsed = yaml.safe_load(edoc_str) or {}
-            info = doc.get("info") or {}
-            info_type = (info.get("type") or "").upper()
-            filename = (info.get("filename") or "").lower()
-            doc_guid = info.get("id")
-            if "COLUMN_ALIAS" in info_type or "alias" in filename:
-                state.alias_hits.extend(_tag_hits(
-                    tml_probes.find_alias_column_uses(parsed, target_cols), doc_guid))
-            if info_type in ("TABLE", "LOGICAL_TABLE"):
-                state.rls_hits.extend(_tag_hits(
-                    tml_probes.find_rls_column_uses(parsed, target_cols), doc_guid))
-            if info_type in ("MODEL", "LOGICAL_MODEL", "WORKSHEET"):
-                state.join_hits.extend(_tag_hits(
-                    tml_probes.find_join_column_uses(parsed, target_cols), doc_guid))
-                state.ai_hits.extend(_tag_hits(
-                    tml_probes.find_ai_surface_uses(parsed, target_cols), doc_guid))
-                if physical_column:
-                    state.formula_hits.extend(_tag_hits(
-                        tml_probes.find_formula_column_uses(parsed, physical_column), doc_guid))
-                    state.model_filter_hits.extend(_tag_hits(
-                        tml_probes.find_model_filter_column_uses(parsed, target_cols), doc_guid))
-                    state.model_docs.append((doc_guid, parsed))
-    except Exception as exc:
+        for info_type, filename, doc_guid, parsed in _unique_docs(resp.json()):
+            _probe_primary_doc(state, scope, info_type, filename, doc_guid, parsed,
+                               target_cols, physical_column)
+    except _PROBE_ERRORS as exc:
         state.primary_probe_ok = False
-        state.primary_probe_error = str(exc)
+        state.primary_probe_error = _probe_error_text(exc)
 
 
 def _run_monitor_alert_probe(state, client, dependents, target_cols) -> None:
@@ -343,9 +431,9 @@ def _run_monitor_alert_probe(state, client, dependents, target_cols) -> None:
                 doc_guid = (doc.get("info") or {}).get("id")
                 state.alert_hits.extend(_tag_hits(
                     tml_probes.find_alert_column_uses(parsed, target_cols), doc_guid))
-    except Exception as exc:
+    except _PROBE_ERRORS as exc:
         state.monitor_probe_ok = False
-        state.monitor_probe_error = str(exc)
+        state.monitor_probe_error = _probe_error_text(exc)
 
 
 def _run_per_model_probes(state, client, target_cols, physical_column) -> None:
@@ -363,15 +451,15 @@ def _run_per_model_probes(state, client, target_cols, physical_column) -> None:
         try:
             state.variable_hits.extend(
                 impact_probes.fetch_formula_variables(client, doc_guid, target_cols))
-        except Exception as exc:
+        except _PROBE_ERRORS as exc:
             state.variables_probe_ok = False
-            state.variables_probe_error = str(exc)
+            state.variables_probe_error = _probe_error_text(exc)
         try:
             state.memory_hits.extend(
                 impact_probes.fetch_business_terms_and_ai_memory(client, doc_guid, target_cols))
-        except Exception as exc:
+        except _PROBE_ERRORS as exc:
             state.memory_probe_ok = False
-            state.memory_probe_error = str(exc)
+            state.memory_probe_error = _probe_error_text(exc)
         # Cascade (column_impact.py Pass 3): a formula referencing the dropped
         # physical column is itself a column other Answers/Liveboards may
         # query directly — walk its own dependents too.
@@ -381,22 +469,24 @@ def _run_per_model_probes(state, client, target_cols, physical_column) -> None:
                 if fguid:
                     state.extra_dependent_rows.extend(
                         impact_probes.walk_one_hop(client, fguid, "LOGICAL_COLUMN", 2))
-            except Exception:
+            except _PROBE_ERRORS:
                 pass  # best-effort cascade; failures don't own a coverage row
 
 
-def _run_csr_probe(state, client, source, deep_active, physical_column) -> None:
-    """Column security rules — needs the owning table's GUID, only available
-    when the source resolved with a parent (e.g. a DB.SCH.TBL.COL input)."""
-    if not (deep_active and source.parent):
+def _run_csr_probe(state, client, scope, physical_column) -> None:
+    """Column security rules on the scope's table: the rules covering the source
+    column, or every rule when the source is the whole table."""
+    if scope["kind"] == "unsupported":
+        state.csr_probe_ok = False
+        state.csr_probe_error = scope["reason"]
         return
     from . import impact_probes
     try:
         state.csr_hits = impact_probes.fetch_column_security_rules(
-            client, source.parent["guid"], physical_column)
-    except Exception as exc:
+            client, scope["table_guid"], physical_column if scope["kind"] == "column" else None)
+    except _PROBE_ERRORS as exc:
         state.csr_probe_ok = False
-        state.csr_probe_error = str(exc)
+        state.csr_probe_error = _probe_error_text(exc)
 
 
 def _run_sql_view_probe(state, client, deep_active, physical_column) -> None:
@@ -413,11 +503,11 @@ def _run_sql_view_probe(state, client, deep_active, physical_column) -> None:
             try:
                 state.extra_dependent_rows.extend(
                     impact_probes.walk_one_hop(client, v["guid"], "LOGICAL_TABLE", 1))
-            except Exception:
+            except _PROBE_ERRORS:
                 pass  # downstream-of-SQL-view walk is best-effort
-    except Exception as exc:
+    except _PROBE_ERRORS as exc:
         state.sql_view_probe_ok = False
-        state.sql_view_probe_error = str(exc)
+        state.sql_view_probe_error = _probe_error_text(exc)
 
 
 def _merge_cascade_rows(dependents: list, state, with_deep: bool, physical_column) -> None:
@@ -439,22 +529,65 @@ def _run_custom_actions_and_schedules(state, client, dependents) -> None:
     try:
         state.action_hits = impact_probes.fetch_custom_actions_for_guids(
             client, [d.guid for d in dependents])
-    except Exception as exc:
+    except _PROBE_ERRORS as exc:
         state.actions_probe_ok = False
-        state.actions_probe_error = str(exc)
+        state.actions_probe_error = _probe_error_text(exc)
     try:
         state.schedule_hits = impact_probes.fetch_scheduled_reports(
             client, [d.guid for d in dependents if d.type == "LIVEBOARD"])
-    except Exception as exc:
+    except _PROBE_ERRORS as exc:
         state.schedules_probe_ok = False
-        state.schedules_probe_error = str(exc)
+        state.schedules_probe_error = _probe_error_text(exc)
+
+
+def _security_coverage(coverage: List[CoverageEntry], scope: dict, state, with_deep: bool):
+    """Set the RLS row and add the CSR row from the scope's checks; return
+    (csr_row, warnings, unverified) where `unverified` lists every security row
+    that did not run, for the aggregate verdict.
+
+    Decided here rather than by `deep_active`, because the security checks have
+    their own reach: a whole-table source IS checkable (every rule on the table
+    goes with it), while a Model or a Model's column is not (its rules live on
+    base tables). An unchecked row must never count toward SAFE.
+    """
+    warnings: List[str] = []
+    unverified: List[str] = []
+
+    def reason_for(ok: bool) -> Optional[str]:
+        if not with_deep:
+            return "security probes skipped (--fast)"
+        if scope["kind"] == "unsupported":
+            return scope["reason"]
+        return None if ok else "probe failed — see warnings"
+
+    rls_row = next(c for c in coverage if c.type == "RLS rules")
+    rls_reason = reason_for(state.primary_probe_ok)
+    rls_row.checked, rls_row.found, rls_row.reason = rls_reason is None, len(state.rls_hits), rls_reason
+
+    csr_reason = reason_for(state.csr_probe_ok)
+    csr_row = CoverageEntry(type="Column security rules (CSR)", checked=csr_reason is None,
+                            found=len(state.csr_hits), reason=csr_reason)
+
+    for row in (rls_row, csr_row):
+        if not row.checked:
+            unverified.append(f"{row.type}: {row.reason}")
+    if with_deep and scope["kind"] == "unsupported":
+        warnings.append(f"RLS rules and column security rules were NOT checked: {scope['reason']}. "
+                        "The report cannot be SAFE until they are.")
+    else:
+        # A column source's primary-export failure is already warned by build_coverage.
+        if with_deep and scope["kind"] == "table" and not state.primary_probe_ok:
+            warnings.append(f"RLS probe failed: {state.primary_probe_error}. The 'RLS rules' row is "
+                            "UNVERIFIED (checked=False) — found=0 does NOT mean the table has no RLS.")
+        if with_deep and not state.csr_probe_ok:
+            warnings.append(f"Column security rules (CSR) probe failed: {state.csr_probe_error}. This row "
+                            "is UNVERIFIED (checked=False) — found=0 does NOT mean nothing was found.")
+    return csr_row, warnings, unverified
 
 
 def _extended_probe_map(state) -> dict:
     """Assemble the `probes` dict build_extended_coverage() expects from a _ProbeState."""
     return {
-        "Column security rules (CSR)": {
-            "hits": state.csr_hits, "ok": state.csr_probe_ok, "error": state.csr_probe_error},
         "Model-level filters": {
             "hits": state.model_filter_hits, "ok": state.primary_probe_ok,
             "error": state.primary_probe_error, "skip_warning": True},
@@ -531,12 +664,13 @@ def build_report(source_ref: str, *, profile: str, with_deep: bool = True, max_d
     target_cols = {source.name} if source.type == "LOGICAL_COLUMN" else set()
     physical_column = source.name if target_cols else None
 
+    scope = _security_scope(source)
     state = _ProbeState()
     if with_deep:
-        _run_primary_probes(state, client, source, target_cols, physical_column)
+        _run_primary_probes(state, client, scope, dependents, target_cols, physical_column)
         _run_monitor_alert_probe(state, client, dependents, target_cols)
         _run_per_model_probes(state, client, target_cols, physical_column)
-        _run_csr_probe(state, client, source, deep_active, physical_column)
+        _run_csr_probe(state, client, scope, physical_column)
         _run_sql_view_probe(state, client, deep_active, physical_column)
 
     _merge_cascade_rows(dependents, state, with_deep, physical_column)
@@ -557,6 +691,10 @@ def build_report(source_ref: str, *, profile: str, with_deep: bool = True, max_d
         primary_probe_error=state.primary_probe_error,
         monitor_probe_error=state.monitor_probe_error,
     )
+    csr_row, security_warnings, unverified_security = _security_coverage(
+        coverage, scope, state, with_deep)
+    coverage.append(csr_row)
+    probe_warnings.extend(security_warnings)
     extended_coverage, extended_warnings = build_extended_coverage(
         deep_active=deep_active, probes=_extended_probe_map(state))
     coverage.extend(extended_coverage)
@@ -578,6 +716,7 @@ def build_report(source_ref: str, *, profile: str, with_deep: bool = True, max_d
         per_dependent_tags=[d.risk for d in dependents],
         rls_hits=state.rls_hits,
         csr_hits=state.csr_hits,
+        unverified_security=unverified_security,
     ))
     classification = Classification(
         per_dependent=dependents,

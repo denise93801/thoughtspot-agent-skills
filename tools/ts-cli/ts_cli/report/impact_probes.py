@@ -22,9 +22,10 @@ from ts_cli.commands.metadata import _build_dependents_payload, _normalize_depen
 
 
 def fetch_column_security_rules(
-    client: ThoughtSpotClient, table_guid: str, physical_column: str,
+    client: ThoughtSpotClient, table_guid: str, physical_column: Optional[str],
 ) -> List[dict]:
-    """Column security rules on `table_guid` that cover `physical_column`.
+    """Column security rules on `table_guid` that cover `physical_column`, or
+    every rule on the table when `physical_column` is None (a whole-table source).
 
     POST /api/rest/2.0/security/column/rules/fetch (beta, 10.12.0.cl+).
     """
@@ -35,7 +36,7 @@ def fetch_column_security_rules(
     for tbl_entry in (resp.json() or []):
         for rule in (tbl_entry.get("column_security_rules") or []):
             col = rule.get("column") or {}
-            if (col.get("name") or "").lower() == (physical_column or "").lower():
+            if physical_column is None or (col.get("name") or "").lower() == physical_column.lower():
                 hits.append({
                     "column": col.get("name"),
                     "column_id": col.get("id"),
