@@ -185,6 +185,9 @@ class TestBuildReportPropagatesProbeFailures:
             assert by_type[t]["found"] == 0
         assert len(out["warnings"]) == 1
         assert "boom" in out["warnings"][0]
+        # The per-Model probes need the Model docs that export would have loaded.
+        for t in ("Formula / template variables", "Business terms / AI memory"):
+            assert by_type[t]["checked"] is False, f"{t} must be checked=False"
         # RLS did not run, so the report cannot be SAFE.
         assert out["classification"]["aggregate"]["tag"] == "UNVERIFIED"
 
@@ -238,3 +241,21 @@ class TestBuildReportPropagatesProbeFailures:
         assert by_type["Monitor alerts"]["found"] == 0
         assert by_type["RLS rules"]["checked"] is True  # unaffected — different probe
         assert any("monitor export exploded" in w for w in out["warnings"])
+
+
+def test_a_failed_cascade_walk_is_warned_not_swallowed():
+    """A SQL view's (or formula column's) downstream walk used to fail with
+    `except: pass`, so the dependents list shrank with no trace (PR #506
+    review, blocker 6). It now leaves a warning naming what was not walked."""
+    from ts_cli.report import _ProbeState, _run_sql_view_probe
+
+    state = _ProbeState()
+    with patch("ts_cli.report.impact_probes.fetch_sql_view_hits",
+               return_value=[{"guid": "v-1", "name": "Orders SQL"}]), \
+         patch("ts_cli.report.impact_probes.walk_one_hop", side_effect=SystemExit(1)):
+        _run_sql_view_probe(state, MagicMock(), True, "AMOUNT")
+
+    assert state.sql_view_probe_ok is True  # the view search itself worked
+    assert len(state.walk_warnings) == 1
+    assert "'Orders SQL'" in state.walk_warnings[0]
+    assert "may be incomplete" in state.walk_warnings[0]

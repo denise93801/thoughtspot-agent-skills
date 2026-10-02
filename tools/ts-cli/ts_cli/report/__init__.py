@@ -140,7 +140,8 @@ def _probe_failure_warnings(
         detail = f": {primary_probe_error}" if primary_probe_error else ""
         warnings.append(
             f"TML probe failed{detail}. Coverage rows for RLS rules, Joins, "
-            "Spotter AI surface area, and Column alias TML are UNVERIFIED "
+            "Spotter AI surface area, Column alias TML, Formula / template variables "
+            "and Business terms / AI memory are UNVERIFIED "
             "(checked=False) — found=0 does NOT mean no usage was found, it means "
             "the probe could not run."
         )
@@ -263,6 +264,8 @@ class _ProbeState:
         # Cascade hops discovered mid-report (formula columns, SQL views) —
         # merged into `dependents` once all cascade sources have run.
         self.extra_dependent_rows: list = []
+        # One line per cascade hop that failed — surfaced in `warnings`.
+        self.walk_warnings: list = []
         # (doc_guid, parsed_model_dict) for every MODEL-type doc seen in the
         # primary export — consumed by the per-model impact_probes phase.
         self.model_docs: list = []
@@ -445,6 +448,16 @@ def _run_per_model_probes(state, client, target_cols, physical_column) -> None:
     """
     from . import tml_probes, impact_probes
 
+    if not state.primary_probe_ok:
+        # model_docs is filled only by a successful primary export, so these
+        # probes have nothing to run on. Without this they kept their default
+        # ok=True and reported "checked, found 0" without a request (PR #506
+        # review, blocker 6).
+        reason = "skipped — the primary TML export failed, so no Model was loaded to check"
+        state.variables_probe_ok, state.variables_probe_error = False, reason
+        state.memory_probe_ok, state.memory_probe_error = False, reason
+        return
+
     for doc_guid, parsed_model in state.model_docs:
         if not doc_guid:
             continue
@@ -469,8 +482,12 @@ def _run_per_model_probes(state, client, target_cols, physical_column) -> None:
                 if fguid:
                     state.extra_dependent_rows.extend(
                         impact_probes.walk_one_hop(client, fguid, "LOGICAL_COLUMN", 2))
-            except _PROBE_ERRORS:
-                pass  # best-effort cascade; failures don't own a coverage row
+            except _PROBE_ERRORS as exc:
+                # No coverage row of its own, but never silent: a failed hop
+                # means dependents of this formula column are missing.
+                state.walk_warnings.append(
+                    f"Dependents of formula column {f['name']!r} could not be walked "
+                    f"({_probe_error_text(exc)}); the dependents list may be incomplete.")
 
 
 def _run_csr_probe(state, client, scope, physical_column) -> None:
@@ -503,8 +520,10 @@ def _run_sql_view_probe(state, client, deep_active, physical_column) -> None:
             try:
                 state.extra_dependent_rows.extend(
                     impact_probes.walk_one_hop(client, v["guid"], "LOGICAL_TABLE", 1))
-            except _PROBE_ERRORS:
-                pass  # downstream-of-SQL-view walk is best-effort
+            except _PROBE_ERRORS as exc:
+                state.walk_warnings.append(
+                    f"Dependents of SQL view {v.get('name') or v['guid']!r} could not be walked "
+                    f"({_probe_error_text(exc)}); the dependents list may be incomplete.")
     except _PROBE_ERRORS as exc:
         state.sql_view_probe_ok = False
         state.sql_view_probe_error = _probe_error_text(exc)
@@ -594,12 +613,14 @@ def _extended_probe_map(state) -> dict:
         "Formula references": {
             "hits": state.formula_hits, "ok": state.primary_probe_ok,
             "error": state.primary_probe_error, "skip_warning": True},
+        # Skipped (not failed) when the primary export failed: that failure's
+        # own warning already explains these rows, so don't repeat it.
         "Formula / template variables": {
             "hits": state.variable_hits, "ok": state.variables_probe_ok,
-            "error": state.variables_probe_error},
+            "error": state.variables_probe_error, "skip_warning": not state.primary_probe_ok},
         "Business terms / AI memory": {
             "hits": state.memory_hits, "ok": state.memory_probe_ok,
-            "error": state.memory_probe_error},
+            "error": state.memory_probe_error, "skip_warning": not state.primary_probe_ok},
         "SQL views": {
             "hits": state.sql_view_hits, "ok": state.sql_view_probe_ok,
             "error": state.sql_view_probe_error},
@@ -699,6 +720,7 @@ def build_report(source_ref: str, *, profile: str, with_deep: bool = True, max_d
         deep_active=deep_active, probes=_extended_probe_map(state))
     coverage.extend(extended_coverage)
     probe_warnings.extend(extended_warnings)
+    probe_warnings.extend(state.walk_warnings)
 
     # Attribute deep-probe hits back to the specific dependent that referenced the
     # column (see build_matched_columns_map docstring) — fixes the scope-filter bug
