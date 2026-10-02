@@ -366,6 +366,14 @@ models/staging/sources.yml` before committing. Surface `changed_tables`/
 `removed_tables`/`removed_source_tables` from the output as an explicit
 manual-review checklist; do not imply `sync` applied them.
 
+**If the report lists `unreadable_files`, stop.** Those are property files
+(`*.yml` / `*.yaml` under `models/`) that are not plain YAML — almost always dbt
+Jinja such as `{% for %}` blocks or an unquoted `{{ doc('…') }}`, which dbt
+renders before parsing. Nothing they declare is in the plan, so `diff`'s lists
+are incomplete, and `sync` refuses with exit 1 and writes nothing. Tell the user
+which files and why; the options are adding the new models by hand, or moving
+the Jinja out of the files `sync` touches. Never "fix" a file by rewriting it.
+
 To also apply `ts_*` metadata changes to existing tables (updated
 descriptions, synonyms, ai_context, RLS rules, new/changed relationships),
 add `--update-metadata`. This flag also auto-deletes column entries whose

@@ -21,6 +21,8 @@ from pathlib import Path
 
 import yaml
 
+from ts_cli.dbt.project_io import property_files, unreadable_property_files
+
 # ---------------------------------------------------------------------------
 # Case B — diff / sync against an existing dbt project
 # ---------------------------------------------------------------------------
@@ -54,8 +56,8 @@ def _existing_source_locations(project_dir: Path) -> dict[str, tuple[str, str]]:
     models_dir = project_dir / "models"
     if not models_dir.is_dir():
         return out
-    for yml in sorted(models_dir.rglob("*.yml")):
-        doc = _safe_load_yaml_dict(yml.read_text(encoding="utf-8")) if yml.is_file() else None
+    for yml in property_files(models_dir):
+        doc = _safe_load_yaml_dict(yml.read_text(encoding="utf-8"))
         for src in (doc or {}).get("sources") or []:
             if isinstance(src, dict) and src.get("name"):
                 out[src["name"]] = (
@@ -121,7 +123,7 @@ def _load_project_state(project_dir: Path) -> tuple[set[str], str, str]:
     all_models: list[dict] = []
     all_sources: list[dict] = []
     if models_dir.is_dir():
-        for yml_file in sorted(models_dir.rglob("*.yml")):
+        for yml_file in property_files(models_dir):
             try:
                 doc = yaml.safe_load(yml_file.read_text(encoding="utf-8"))
             except Exception:
@@ -247,6 +249,9 @@ def _build_case_b_report(
         "adopted_names": adopted_names,
         "scoped_to": sorted(str(d) for d in scope_dirs),
         "dbt_output_tables": sorted(dbt_output_tables),
+        # Property files this plan could NOT read. Whatever they declare is
+        # missing from every list above, so `sync` refuses while any remain.
+        "unreadable_files": unreadable_property_files(project_dir),
     }
 
 
@@ -257,6 +262,7 @@ def _report_json(
     preserved: "dict[str, list[str]] | None" = None,
 ) -> str:
     payload = {
+        "unreadable_files": report.get("unreadable_files", []),
         "adopted_names": report.get("adopted_names", {}),
         "scoped_to": report.get("scoped_to", []),
         "dbt_output_tables": report.get("dbt_output_tables", []),
@@ -361,6 +367,7 @@ def render_report_markdown(
     """
     got = {k: report.get(k) or default for k, default in _REPORT_KEYS}
     lines = _md_summary({k: len(v) for k, v in got.items()})
+    lines += _md_unreadable(report.get("unreadable_files") or [])
     lines += _md_removals(got["removed_tables"], got["removed_source_tables"])
     lines += _md_section("### New tables", "",
                          [f"- `{t}`" for t in got["new_tables"]])
@@ -376,6 +383,16 @@ _REPORT_KEYS = (
     ("new_tables", []), ("removed_tables", []), ("changed_tables", {}),
     ("new_source_tables", []), ("removed_source_tables", []),
 )
+
+
+def _md_unreadable(unreadable: list) -> list:
+    if not unreadable:
+        return []
+    return _md_section(
+        "### Cannot plan safely — files that could not be read",
+        "Anything these files declare is missing from this plan, and `sync` "
+        "refuses to write while any remain:",
+        [f"- `{u['path']}` — {u['reason']}" for u in unreadable])
 
 
 def _md_removals(removed_tables: list, removed_source_tables: list) -> list:

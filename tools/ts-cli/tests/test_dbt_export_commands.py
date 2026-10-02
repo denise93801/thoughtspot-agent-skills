@@ -843,6 +843,160 @@ class TestSyncDryRun:
         assert _project_snapshot(proj) != before
 
 
+class TestSyncNeverRewritesUnreadableFiles:
+    """PR #506 review, blocker 4: a property file PyYAML cannot parse was read as
+    empty, and sync rewrote it with only the generated models. dbt renders Jinja
+    before parsing YAML, so every input below is valid dbt."""
+
+    JINJA_LOOP = (
+        "version: 2\n"
+        "models:\n"
+        "{% for m in var('models') %}\n"
+        "  - name: {{ m }}\n"
+        "{% endfor %}\n"
+    )
+    UNQUOTED_DOC = (
+        "version: 2\n"
+        "models:\n"
+        "  - name: stg_customers\n"
+        "    description: {{ doc('customers') }}\n"
+    )
+
+    def _assert_refused_untouched(self, tmp_path, rel_path, content):
+        model_path, export_dir = _write_export_fixtures(tmp_path)
+        proj = _write_existing_project(tmp_path)
+        target = proj / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        before = _project_snapshot(proj)
+
+        result = _invoke_with("sync", model_path, export_dir, proj)
+
+        assert result.exit_code == 1, result.output
+        assert "Refusing to write" in result.output
+        assert rel_path in result.output
+        assert _project_snapshot(proj) == before
+
+    def test_jinja_loop_in_schema_yml(self, tmp_path):
+        self._assert_refused_untouched(tmp_path, "models/schema.yml", self.JINJA_LOOP)
+
+    def test_unquoted_doc_call(self, tmp_path):
+        self._assert_refused_untouched(tmp_path, "models/schema.yml", self.UNQUOTED_DOC)
+
+    def test_jinja_in_a_file_sync_would_not_write(self, tmp_path):
+        """Whatever an unread file declares is missing from the plan, so the plan
+        itself is wrong — not only the write to that file."""
+        self._assert_refused_untouched(
+            tmp_path, "models/marts/marts.yml",
+            "version: 2\nmodels:\n{% if target.name == 'prod' %}\n  - name: x\n{% endif %}\n")
+
+    def test_diff_and_dry_run_report_the_file(self, tmp_path):
+        model_path, export_dir = _write_export_fixtures(tmp_path)
+        proj = _write_existing_project(tmp_path)
+        (proj / "models" / "schema.yml").write_text(self.JINJA_LOOP, encoding="utf-8")
+        before = _project_snapshot(proj)
+
+        for args in (("diff",), ("sync", "--dry-run")):
+            result = _invoke_with(args[0], model_path, export_dir, proj, *args[1:])
+            assert result.exit_code == 0, result.output
+            payload = json.loads(result.stdout)
+            assert payload["unreadable_files"] == [{
+                "path": "models/schema.yml",
+                "reason": "contains dbt Jinja, which is not plain YAML"}]
+            assert "plan is incomplete" in result.stderr
+        assert _project_snapshot(proj) == before
+
+    def test_bad_format_fails_before_any_write(self, tmp_path):
+        model_path, export_dir = _write_export_fixtures(tmp_path)
+        proj = _write_existing_project(tmp_path)
+        before = _project_snapshot(proj)
+
+        result = _invoke_with("sync", model_path, export_dir, proj, "--format", "yaml")
+
+        assert result.exit_code != 0
+        assert _project_snapshot(proj) == before
+
+
+class TestSyncReadsYamlSuffix:
+    """dbt reads `*.yaml` property files as well as `*.yml`."""
+
+    def _yaml_suffix_project(self, tmp_path):
+        proj = _write_existing_project(tmp_path)
+        (proj / "models" / "schema.yml").rename(proj / "models" / "schema.yaml")
+        staging = proj / "models" / "staging"
+        (staging / "sources.yml").rename(staging / "sources.yaml")
+        return proj
+
+    def test_existing_models_are_seen(self, tmp_path):
+        model_path, export_dir = _write_export_fixtures(tmp_path)
+        proj = self._yaml_suffix_project(tmp_path)
+
+        payload = json.loads(_invoke("diff", model_path, export_dir, proj).stdout)
+
+        assert payload["new_tables"] == ["stg_orders"]
+        assert payload["new_source_tables"] == ["ORDERS"]
+
+    def test_sync_appends_to_the_yaml_files(self, tmp_path):
+        model_path, export_dir = _write_export_fixtures(tmp_path)
+        proj = self._yaml_suffix_project(tmp_path)
+
+        result = _invoke("sync", model_path, export_dir, proj)
+
+        assert result.exit_code == 0, result.output
+        assert not (proj / "models" / "schema.yml").exists()
+        assert not (proj / "models" / "staging" / "sources.yml").exists()
+        schema_doc = yaml.safe_load((proj / "models" / "schema.yaml").read_text(encoding="utf-8"))
+        assert {m["name"] for m in schema_doc["models"]} == {"stg_customers", "stg_orders"}
+        sources_doc = yaml.safe_load(
+            (proj / "models" / "staging" / "sources.yaml").read_text(encoding="utf-8"))
+        assert {t["name"] for t in sources_doc["sources"][0]["tables"]} == {"CUSTOMERS", "ORDERS"}
+
+
+class TestCommitWrites:
+    def test_a_failed_staging_step_changes_nothing(self, tmp_path, monkeypatch):
+        from ts_cli.dbt import project_io
+
+        first, second = tmp_path / "a.yml", tmp_path / "sub" / "b.yml"
+        first.write_text("original\n", encoding="utf-8")
+        real_mkstemp = project_io.tempfile.mkstemp
+        calls = []
+
+        def flaky_mkstemp(*a, **k):
+            calls.append(1)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real_mkstemp(*a, **k)
+
+        monkeypatch.setattr(project_io.tempfile, "mkstemp", flaky_mkstemp)
+        try:
+            project_io.commit_writes({first: "new\n", second: "new\n"})
+        except OSError:
+            pass
+        else:
+            raise AssertionError("commit_writes swallowed the failure")
+
+        assert first.read_text(encoding="utf-8") == "original\n"
+        assert not second.exists()
+        assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["a.yml"]
+
+    def test_writes_every_file(self, tmp_path):
+        from ts_cli.dbt.project_io import commit_writes
+
+        targets = {tmp_path / "x.yml": "1\n", tmp_path / "d" / "y.sql": "2\n"}
+        commit_writes(targets)
+        assert {p: p.read_text(encoding="utf-8") for p in targets} == targets
+
+
+def test_update_metadata_without_models_dir_returns_a_pair(tmp_path):
+    """Was `return []` where the caller unpacks two values (PR #506 review)."""
+    from ts_cli.commands.dbt_export import _update_existing_schema_models
+
+    writes: dict = {}
+    assert _update_existing_schema_models(
+        tmp_path, {"files": {}, "new_tables": []}, writes) == ([], {})
+    assert writes == {}
+
+
 class TestFormatMarkdown:
     def test_diff_md_names_the_new_table(self, tmp_path):
         model_path, export_dir = _write_export_fixtures(tmp_path)

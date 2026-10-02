@@ -31,6 +31,7 @@ from ts_cli.dbt.case_b_plan import (
     _unmanaged_ts_keys,  # noqa: F401 -- re-exported for tests
     render_report_markdown,
 )
+from ts_cli.dbt.project_io import commit_writes, property_files
 from ts_cli.io_helpers import load_json_file
 
 app = typer.Typer(help="ThoughtSpot Model TML -> dbt project scaffold (offline file transform).")
@@ -248,6 +249,21 @@ _CASE_B_OPTIONS = {
 }
 
 
+def _check_format(fmt: str) -> str:
+    """Validate --format. Called before anything is read or written, so a typo
+    can never surface only after `sync` has already changed the project."""
+    fmt = (fmt or "json").lower()
+    if fmt not in ("json", "md"):
+        raise SystemExit(f"--format must be 'json' or 'md', not {fmt!r}.")
+    return fmt
+
+
+def _warn_unreadable(report: dict) -> None:
+    for u in report.get("unreadable_files") or []:
+        typer.echo(f"  WARNING: {u['path']} {u['reason']} — it was not read, so this "
+                   "plan is incomplete.", err=True)
+
+
 def _emit_report(
     report: dict, fmt: str, *,
     written: "list[str] | None" = None,
@@ -256,9 +272,7 @@ def _emit_report(
 ) -> None:
     """Print the change-set in the requested format. One place, so `diff`,
     `sync` and `sync --dry-run` cannot render the same report differently."""
-    fmt = (fmt or "json").lower()
-    if fmt not in ("json", "md"):
-        raise SystemExit(f"--format must be 'json' or 'md', not {fmt!r}.")
+    fmt = _check_format(fmt)
     if fmt == "md":
         print(render_report_markdown(
             report, written=written, preserved=preserved, dry_run=dry_run), end="")
@@ -309,6 +323,7 @@ def diff_cmd(
       ts dbt-export diff --model export/model.json --tables-dir export/ \\
         --project-name sales --source-name warehouse --project-dir ./sales_dbt
     """
+    _check_format(format)
     model_tml = _read_json_file(model_path, "--model")
     table_tmls = _load_table_tmls(tables_dir)
 
@@ -318,6 +333,7 @@ def diff_cmd(
         raise SystemExit(1)
 
     report = _build_case_b_report(model_tml, table_tmls, project_name, source_name, proj)
+    _warn_unreadable(report)
 
     typer.echo(
         f"  new_tables:            {len(report['new_tables'])}\n"
@@ -374,6 +390,11 @@ def sync_cmd(
     does not preserve comments. Only run this against a version-controlled
     project and review `git diff` before committing.
 
+    REFUSES (exit 1, nothing written) when any `*.yml`/`*.yaml` under `models/`
+    is not plain YAML — typically dbt Jinja. Such a file is not empty, and
+    rewriting it from a failed parse would drop everything it declares. All
+    writes are staged and swapped in together, so they land all or none.
+
     Pass ``--dry-run`` to compute and print the change-set without writing
     anything. It returns before the first write and emits exactly what
     `ts dbt-export diff` does — same engine, same renderer — so reviewing the
@@ -391,6 +412,7 @@ def sync_cmd(
       ts dbt-export sync --model export/model.json --tables-dir export/ \\
         --project-name sales --source-name warehouse --project-dir ./sales_dbt
     """
+    _check_format(format)
     model_tml = _read_json_file(model_path, "--model")
     table_tmls = _load_table_tmls(tables_dir)
 
@@ -401,6 +423,7 @@ def sync_cmd(
 
     report = _build_case_b_report(model_tml, table_tmls, project_name, source_name, proj)
     new_tables = set(report["new_tables"])
+    _warn_unreadable(report)
 
     if dry_run:
         # Return BEFORE any write, printing the same stdout payload the real
@@ -409,13 +432,29 @@ def sync_cmd(
         _emit_report(report, format, written=[], dry_run=True)
         return
 
-    written = _write_new_sql_files(proj, report["files"], new_tables)
-    written += _append_new_schema_models(proj, report["files"], new_tables)
-    written += _merge_new_source_tables(proj, report, source_name)
+    if report["unreadable_files"]:
+        # A file the plan could not read is NOT an empty file: rewriting it from
+        # what was parsed would drop everything it declares (PR #506 review,
+        # blocker 4). dbt renders Jinja before parsing YAML, so ordinary dbt
+        # (`{% for %}`, an unquoted `{{ doc() }}`) lands here.
+        typer.echo(
+            f"  Refusing to write: {len(report['unreadable_files'])} property file(s) under "
+            f"{proj / 'models'} could not be read as YAML (listed above). Nothing was "
+            "written. Add the new models by hand, or move the Jinja out of the files "
+            "this command would touch and re-run.", err=True)
+        raise SystemExit(1)
+
+    # Every change is computed first and written in one all-or-nothing step,
+    # so a failure part-way cannot leave a half-updated project.
+    writes: dict[Path, str] = {}
+    written = _write_new_sql_files(proj, report["files"], new_tables, writes)
+    written += _append_new_schema_models(proj, report["files"], new_tables, writes)
+    written += _merge_new_source_tables(proj, report, source_name, writes)
     preserved: dict[str, list[str]] = {}
     if update_metadata:
-        meta_written, preserved = _update_existing_schema_models(proj, report)
+        meta_written, preserved = _update_existing_schema_models(proj, report, writes)
         written += meta_written
+    commit_writes(writes)
 
     _print_sync_result(
         proj, report, written,
@@ -424,24 +463,24 @@ def sync_cmd(
 
 
 
-def _write_new_sql_files(proj: Path, files: dict[str, str], new_tables: set[str]) -> list[str]:
+def _write_new_sql_files(
+    proj: Path, files: dict[str, str], new_tables: set[str], writes: "dict[Path, str]",
+) -> list[str]:
     """New tables' staging/passthrough `.sql` files — brand-new files,
-    nothing existing is touched."""
+    nothing existing is touched. Adds to `writes`; the caller commits."""
     written: list[str] = []
     for rel_path, content in files.items():
         if rel_path.endswith(".sql") and Path(rel_path).stem in new_tables:
-            dest = proj / rel_path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
+            writes[proj / rel_path] = content
             written.append(rel_path)
     return written
 
 
 def _append_new_schema_models(
-    proj: Path, files: dict[str, str], new_tables: set[str],
+    proj: Path, files: dict[str, str], new_tables: set[str], writes: "dict[Path, str]",
 ) -> list[str]:
-    """New tables' `models/schema.yml` model blocks — append-only; creates
-    schema.yml if it doesn't exist yet."""
+    """New tables' model blocks appended to `models/schema.yml` (or an existing
+    `models/schema.yaml`); creates schema.yml if neither exists. Adds to `writes`."""
     if not new_tables:
         return []
     fresh_schema_doc = _safe_load_yaml_dict(
@@ -452,14 +491,16 @@ def _append_new_schema_models(
         return []
 
     schema_path = proj / "models" / "schema.yml"
+    if not schema_path.is_file() and (proj / "models" / "schema.yaml").is_file():
+        schema_path = proj / "models" / "schema.yaml"
+    # Safe to treat a missing/empty file as empty: sync_cmd has already refused
+    # any property file that does not parse.
     existing_schema_doc = _safe_load_yaml_dict(
         schema_path.read_text(encoding="utf-8") if schema_path.is_file() else ""
     ) or {"version": 2, "models": []}
     existing_schema_doc.setdefault("models", []).extend(new_model_docs)
-    schema_path.parent.mkdir(parents=True, exist_ok=True)
-    schema_path.write_text(
-        yaml.safe_dump(existing_schema_doc, sort_keys=False), encoding="utf-8")
-    return ["models/schema.yml (appended)"]
+    writes[schema_path] = yaml.safe_dump(existing_schema_doc, sort_keys=False)
+    return [f"{schema_path.relative_to(proj)} (appended)"]
 
 
 def _find_sources_file(proj: Path, source_name: str) -> Path:
@@ -473,7 +514,7 @@ def _find_sources_file(proj: Path, source_name: str) -> Path:
         return default
     models_dir = proj / "models"
     if models_dir.is_dir():
-        for yml_file in sorted(models_dir.rglob("sources.yml")):
+        for yml_file in property_files(models_dir, stem="sources"):
             try:
                 doc = yaml.safe_load(yml_file.read_text(encoding="utf-8"))
             except Exception:
@@ -486,7 +527,9 @@ def _find_sources_file(proj: Path, source_name: str) -> Path:
     return default
 
 
-def _merge_new_source_tables(proj: Path, report: dict, source_name: str = "") -> list[str]:
+def _merge_new_source_tables(
+    proj: Path, report: dict, source_name: str, writes: "dict[Path, str]",
+) -> list[str]:
     """New source table entries merged into the appropriate sources.yml — append-only,
     matched by (database, schema) against the existing source blocks.
 
@@ -527,16 +570,14 @@ def _merge_new_source_tables(proj: Path, report: dict, source_name: str = "") ->
         else:
             existing_sources.append({**fresh_src, "tables": new_entries})
 
-    sources_path.parent.mkdir(parents=True, exist_ok=True)
-    sources_path.write_text(
-        yaml.safe_dump(file_sources_doc, sort_keys=False), encoding="utf-8")
+    writes[sources_path] = yaml.safe_dump(file_sources_doc, sort_keys=False)
     relative_path = str(sources_path.relative_to(proj))
     return [f"{relative_path} (merged)"]
 
 
 def _update_existing_schema_models(
-    proj: Path, report: dict,
-) -> list[str]:
+    proj: Path, report: dict, writes: "dict[Path, str]",
+) -> "tuple[list[str], dict[str, list[str]]]":
     """Sync ts_* metadata from the fresh schema into existing model entries.
 
     For each model present in BOTH the existing project AND the fresh
@@ -575,11 +616,11 @@ def _update_existing_schema_models(
     new_tables = set(report["new_tables"])
     models_dir = proj / "models"
     if not models_dir.is_dir():
-        return []
+        return [], preserved
 
     file_docs: dict[Path, dict] = {}
     model_to_file: dict[str, Path] = {}
-    for yml_path in sorted(models_dir.rglob("*.yml")):
+    for yml_path in property_files(models_dir):
         try:
             doc = yaml.safe_load(yml_path.read_text(encoding="utf-8"))
         except Exception:
@@ -695,8 +736,7 @@ def _update_existing_schema_models(
 
     written = []
     for yml_path in sorted(updated_files):
-        yml_path.write_text(
-            yaml.safe_dump(file_docs[yml_path], sort_keys=False), encoding="utf-8")
+        writes[yml_path] = yaml.safe_dump(file_docs[yml_path], sort_keys=False)
         rel = str(yml_path.relative_to(proj))
         written.append(f"{rel} (updated ts_* metadata)")
     return written, preserved

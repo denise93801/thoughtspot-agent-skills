@@ -4144,7 +4144,16 @@ generate these files from scratch) — appending reformats the WHOLE file and
 does not preserve comments. Only run `sync` against a version-controlled
 project and review `git diff` before committing.
 
-**Output (stdout):** the change-set JSON — `{new_tables, removed_tables,
+**Unreadable property files stop `sync`.** Every `*.yml` and `*.yaml` file under
+`models/` is parsed before anything is written. dbt renders Jinja before parsing
+YAML, so `{% for %}` blocks or an unquoted `{{ doc('x') }}` are valid dbt and not
+valid YAML; such a file is listed in `unreadable_files` (with `diff`, and
+`sync --dry-run`, warning that the plan is incomplete), and a real `sync` exits 1
+without writing. Earlier builds read such a file as empty and rewrote it with
+only the generated models. When `sync` does write, every file is staged first
+and swapped in together, so a failure part-way leaves the project unchanged.
+
+**Output (stdout):** the change-set JSON — `{unreadable_files, new_tables, removed_tables,
 changed_tables, new_source_tables, removed_source_tables}` (`sync` adds a
 `written` field listing what it wrote, and a `preserved_meta` field —
 `{"<model>.<column>": [unmanaged ts_* keys]}` — whenever `--update-metadata`
