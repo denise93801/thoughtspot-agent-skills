@@ -94,21 +94,18 @@ _TS_INDEX_TYPE_REVERSE_MAP = {v: k for k, v in _TS_INDEX_TYPE_MAP.items()}
 
 
 # Every `ts_*` key this module is CAPABLE of writing into a column's
-# `config.meta`, and the one it writes at model level. This is the generator's
-# ownership boundary, and it is what makes `ts dbt-export sync
-# --update-metadata` safe: a key in here may be overwritten or cleared (absent
-# from a fresh generation means the property was removed in ThoughtSpot, so it
-# should go from schema.yml too), and a `ts_*` key NOT in here is left strictly
-# alone.
+# `config.meta`, and the one it writes at model level. `ts dbt-export diff`
+# compares only these keys (dbt_diff._owned_meta): a key outside the set can
+# never appear in a fresh generation, so comparing it would report a change
+# `sync` never makes.
 #
-# The tags outside the boundary are the reason it has to exist. ThoughtSpot
-# documents `ts_hidden`, `ts_calendar_type`, `ts_currency_type` and
-# `ts_geo_config`, but this generator deliberately never emits them (is_hidden
-# and calendar carry explicit "never emit during generation" warnings in
-# agents/shared/schemas/thoughtspot-model-tml.md; currency_type and geo_config
-# have no verified value mapping — see ts-convert-to-dbt open-items #9).
-# `ts_column_exclude` is hand-authored by definition. A blanket "clear every
-# `ts_*` key" merge therefore deleted hand-written tags with no diagnostic.
+# This set does NOT license deleting anything. `sync --update-metadata` writes
+# fresh values over existing ones and never removes a tag
+# (case_b_plan._merge_ts_meta): an owned key the fresh Model lacks is kept and
+# reported, because its absence cannot tell "never set in ThoughtSpot" (someone
+# wrote it in dbt to send it there) from "removed in ThoughtSpot". Clearing it
+# deleted hand-authored `ts_hidden` / `ts_calendar_type` / `ts_currency_type` /
+# `ts_geo_config` values with no report (PR #506 review, blocker 5).
 #
 # Keep in sync with `_build_column_meta` / `_build_schema_columns` /
 # `_build_schema_docs`; `test_dbt_build_export.py::TestGeneratedMetaKeyBoundary`

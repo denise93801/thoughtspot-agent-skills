@@ -28,7 +28,7 @@ from ts_cli.dbt.case_b_plan import (
     _report_json,
     _safe_load_yaml_dict,
     _set_or_replace_relationship_test,
-    _unmanaged_ts_keys,  # noqa: F401 -- re-exported for tests
+    _kept_ts_keys,  # noqa: F401 -- re-exported for tests
     render_report_markdown,
 )
 from ts_cli.dbt.project_io import commit_writes, property_files
@@ -356,8 +356,10 @@ def sync_cmd(
     update_metadata: bool = typer.Option(
         False, "--update-metadata",
         help="Also update ts_* metadata on EXISTING tables (not just new ones). "
-             "Preserves non-ts_* meta keys; never auto-deletes columns or "
-             "relationship tests."),
+             "Preserves non-ts_* meta keys and never deletes a relationship test. "
+             "Deletes a column entry only when the column left the ThoughtSpot "
+             "Model AND the entry holds nothing but what `build` generates; every "
+             "other removed column is reported for manual review."),
     dry_run: bool = typer.Option(
         False, "--dry-run",
         help="Compute and print the change-set, then return without writing "
@@ -403,8 +405,10 @@ def sync_cmd(
     Pass ``--update-metadata`` to also apply ts_* metadata changes
     (modified_meta, new_relationship, modified_relationship, model-level
     ts_rls_rules, column descriptions) to tables that ALREADY EXIST in the
-    project. Non-ts_* meta keys are always preserved. Columns and
-    relationship tests are never auto-deleted.
+    project. Non-ts_* meta keys are always preserved, and relationship tests
+    are never auto-deleted. A column that left the Model is deleted only when
+    its entry holds nothing but generated content (see `_is_ts_only_column`);
+    any other removed column is left in place and reported for review.
 
     Example:
 
@@ -583,27 +587,21 @@ def _update_existing_schema_models(
     For each model present in BOTH the existing project AND the fresh
     generation (skipping new_tables — those are handled by the additive
     path):
-      - ts_* keys this generator OWNS (dbt_build_export.GENERATED_*_META_KEYS)
-        are updated in column and model-level config.meta; non-ts_* keys and
-        ts_* keys outside that set are preserved untouched (_merge_ts_meta)
+      - every ts_* value the fresh generation carries is written into column
+        and model-level config.meta; nothing is removed — a ts_* key ThoughtSpot
+        does not set, and every non-ts_* key, is kept as written (_merge_ts_meta)
       - column `description` is updated when the fresh schema has one
       - new columns (from changed_tables.new_columns) are appended
       - relationship tests are added/replaced (new_relationship/modified_relationship)
-      - removed_columns that contain ONLY ts_*-originated content are deleted;
-        columns with a description, non-ts_* meta keys, or custom data_tests are
-        left in place for manual review (_is_ts_only_column)
+      - a removed column is deleted only when its entry holds nothing but what
+        `build` generates; any other is left in place for manual review
+        (_is_ts_only_column)
       - removed_relationship entries are never auto-deleted
 
     Returns `(written_paths, preserved)` where `preserved` is
-    `{"<model>.<column>": [unmanaged ts_* keys]}` for every entry that carried
-    a hand-authored tag this pass deliberately left alone — the caller prints
-    it, so the ownership boundary is visible instead of merely respected.
+    `{"<model>.<column>": [ts_* keys kept]}` for every entry carrying a ts_* tag
+    ThoughtSpot does not set — the caller prints it, so a kept tag is visible.
     """
-    from ts_cli.dbt_build_export import (
-        GENERATED_COLUMN_META_KEYS,
-        GENERATED_MODEL_META_KEYS,
-    )
-
     preserved: dict[str, list[str]] = {}
     fresh_schema_doc = _safe_load_yaml_dict(
         report["files"].get("models/schema.yml", "")) or {"version": 2, "models": []}
@@ -656,8 +654,7 @@ def _update_existing_schema_models(
         if fresh_model_meta:
             existing_model_meta = ((model_entry.get("config") or {}).get("meta")) or {}
             merged = _merge_and_record(
-                existing_model_meta, fresh_model_meta, GENERATED_MODEL_META_KEYS,
-                model_name, preserved)
+                existing_model_meta, fresh_model_meta, model_name, preserved)
             if merged != existing_model_meta:
                 model_entry.setdefault("config", {})["meta"] = merged
                 changed = True
@@ -689,8 +686,7 @@ def _update_existing_schema_models(
             existing_meta = ((col_entry.get("config") or {}).get("meta")) or {}
             fresh_meta = ((fresh_col.get("config") or {}).get("meta")) or {}
             merged_meta = _merge_and_record(
-                existing_meta, fresh_meta, GENERATED_COLUMN_META_KEYS,
-                f"{model_name}.{col_name}", preserved)
+                existing_meta, fresh_meta, f"{model_name}.{col_name}", preserved)
             if merged_meta != existing_meta:
                 col_entry.setdefault("config", {})["meta"] = merged_meta
                 changed = True
@@ -759,9 +755,9 @@ def _print_sync_result(
     if preserved:
         total = sum(len(v) for v in preserved.values())
         typer.echo(
-            f"  Preserved {total} hand-authored ts_* tag(s) on "
+            f"  Kept {total} ts_* tag(s) ThoughtSpot does not set, on "
             f"{len(preserved)} entr{'y' if len(preserved) == 1 else 'ies'} — "
-            "not written by `ts dbt-export build`, so left untouched:", err=True)
+            "left as written (sync never deletes a tag); remove any that no longer apply:", err=True)
         for where, keys in sorted(preserved.items()):
             typer.echo(f"    {where}: {', '.join(keys)}", err=True)
 

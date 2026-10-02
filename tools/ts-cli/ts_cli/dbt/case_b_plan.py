@@ -432,76 +432,87 @@ def _md_preserved(preserved: "dict[str, list[str]] | None") -> list:
         return []
     total = sum(len(v) for v in preserved.values())
     return _md_section(
-        f"### Preserved — {total} hand-authored `ts_*` tag(s)",
-        "Outside `ts dbt-export build`'s own vocabulary, so left exactly as written:",
+        f"### Kept — {total} `ts_*` tag(s) ThoughtSpot does not set",
+        "Left exactly as written in dbt (sync never deletes a tag). Remove any that "
+        "should no longer apply:",
         [f"- `{where}`: {', '.join(keys)}" for where, keys in sorted(preserved.items())])
 
 
-def _merge_ts_meta(existing_meta: dict, fresh_meta: dict, owned: "frozenset[str]") -> dict:
-    """Merge the generator's own ts_* keys into existing_meta.
+def _merge_ts_meta(existing_meta: dict, fresh_meta: dict) -> dict:
+    """What `sync --update-metadata` writes: existing_meta, with every `ts_*`
+    value the fresh generation carries written over it.
 
-    Three classes of key, three behaviours:
-
-    - **non-`ts_*`** — preserved. Another tool owns it.
-    - **`ts_*` in `owned`** — replaced by the fresh value, or cleared when the
-      fresh generation has none (the property was removed in ThoughtSpot, so it
-      should leave schema.yml too). This is the actual sync.
-    - **`ts_*` NOT in `owned`** — preserved. `ts dbt-export build` cannot
-      produce this key, so a human wrote it: `ts_hidden`, `ts_calendar_type`,
-      `ts_currency_type`, `ts_geo_config` (all documented ThoughtSpot tags this
-      generator deliberately never emits), `ts_column_exclude`, or a tag from a
-      newer ThoughtSpot than this build knows about.
-
-    That third class is the fix for a silent-data-loss bug: the previous
-    implementation cleared every `ts_*` key not present in the fresh meta, so
-    `sync --update-metadata` deleted hand-authored tags with no diagnostic. The
-    caller reports what was preserved (`_unmanaged_ts_keys`) so the boundary is
-    visible rather than merely safe.
-
-    The fresh side is filtered on the `ts_` prefix rather than on `owned`, so a
-    tag a future emitter adds still gets written even if `owned` has not caught
-    up — it just won't be cleared until it's declared. Failing in the
-    write-it-anyway direction is the safer drift.
+    Nothing is ever removed. A `ts_*` key the fresh generation lacks is kept as
+    written, because its absence is ambiguous: ThoughtSpot may never have had
+    the setting (a human wrote `ts_hidden: true` in dbt, to send it TO
+    ThoughtSpot), or it may have been removed there. Clearing it on that guess
+    deleted hand-authored tags — `ts_hidden`, `ts_calendar_type`,
+    `ts_currency_type`, `ts_geo_config` among them — while reporting them as
+    neither changed nor preserved (PR #506 review, blocker 5). Keeping costs a
+    stale tag at worst, which `_kept_ts_keys` reports so a human can remove it;
+    clearing cost data with no trace. Non-`ts_*` keys are always kept.
     """
-    result = {k: v for k, v in existing_meta.items() if k not in owned}
+    result = dict(existing_meta)
     result.update({k: v for k, v in fresh_meta.items() if k.startswith("ts_")})
     return result
 
 
-def _unmanaged_ts_keys(existing_meta: dict, owned: "frozenset[str]") -> list[str]:
-    """`ts_*` keys present in existing_meta that this generator does not own —
-    i.e. the ones `_merge_ts_meta` deliberately leaves untouched."""
-    return sorted(
-        k for k in existing_meta
-        if k.startswith("ts_") and k not in owned
-    )
+def _kept_ts_keys(existing_meta: dict, fresh_meta: dict) -> list[str]:
+    """`ts_*` keys in existing_meta that the fresh generation does not set —
+    the ones `_merge_ts_meta` keeps on its own judgement, reported so they stay
+    visible."""
+    return sorted(k for k in existing_meta if k.startswith("ts_") and k not in fresh_meta)
 
 
-def _merge_and_record(
-    existing_meta: dict, fresh_meta: dict, owned: "frozenset[str]",
-    label: str, preserved: dict,
-) -> dict:
-    """`_merge_ts_meta`, recording under `label` any unmanaged `ts_*` key the
-    merge left alone so the caller can report it."""
-    kept = _unmanaged_ts_keys(existing_meta, owned)
-    if kept:
-        preserved[label] = kept
-    return _merge_ts_meta(existing_meta, fresh_meta, owned)
+def _merge_and_record(existing_meta: dict, fresh_meta: dict, label: str, kept: dict) -> dict:
+    """`_merge_ts_meta`, recording under `label` every `ts_*` key it kept that
+    ThoughtSpot does not set, so the caller can report them."""
+    keys = _kept_ts_keys(existing_meta, fresh_meta)
+    if keys:
+        kept[label] = keys
+    return _merge_ts_meta(existing_meta, fresh_meta)
+
+
+# The only keys `ts dbt-export build` writes on a column entry, and the only
+# key it writes inside `config:`. A column carrying anything else — a dbt
+# `tags:`/`quote:`/`data_type:`/`constraints:`, a legacy bare `meta:`, or any
+# `config:` key besides `meta` — has been touched by someone else.
+_GENERATED_COLUMN_ENTRY_KEYS = frozenset({"name", "description", "config", "data_tests", "tests"})
+_GENERATED_COLUMN_CONFIG_KEYS = frozenset({"meta"})
+
+
+def _has_only_generated_keys(col_entry: dict) -> bool:
+    """No column key beyond what `build` writes, and `config` holds only `meta`."""
+    if set(col_entry) - _GENERATED_COLUMN_ENTRY_KEYS:
+        return False
+    config = col_entry.get("config") or {}
+    return isinstance(config, dict) and not set(config) - _GENERATED_COLUMN_CONFIG_KEYS
 
 
 def _is_ts_only_column(col_entry: dict) -> bool:
-    """True if a column entry contains ONLY ts_*-originated content.
+    """True only for a column entry this generator demonstrably wrote and no
+    one has added to since — the one kind `sync --update-metadata` may delete
+    when the column leaves the ThoughtSpot Model.
 
-    A column is safe to auto-delete when ThoughtSpot removes it if:
-    - all config.meta keys are ts_* prefixed (no custom keys from other tools)
-    - there is no `description` (could be manually authored)
-    - there are no data_tests beyond a `relationships` test (which we manage)
+    Every condition must hold:
+    - the entry has no keys beyond what `build` writes, and `config` holds only
+      `meta` (so a legacy bare `meta:` or `config: {tags: [pii]}` keeps it);
+    - `config.meta` carries `ts_column_type`, which `build` writes on every
+      column it generates — an entry without it was not generated here;
+    - every `config.meta` key is `ts_*`, and none is `ts_column_exclude`;
+    - there is no `description` (could be hand-written);
+    - there are no data_tests beyond the `relationships` test this tool manages.
 
-    A column that fails any of these checks is left for manual review.
+    The `ts_column_type` requirement matters because "removed" means "in dbt, not
+    in the Model", and a Model normally exposes only some of a table's columns:
+    an empty or hand-written entry for a column the Model never had would
+    otherwise read as deletable (PR #506 review, blocker 5).
     """
-    meta = ((col_entry.get("config") or {}).get("meta")) or {}
     from ts_cli.dbt_build_export import is_column_excluded
-    if is_column_excluded(meta):          # excluded on purpose — not "deleted by ThoughtSpot"
+    if not _has_only_generated_keys(col_entry):
+        return False
+    meta = (col_entry.get("config") or {}).get("meta") or {}
+    if "ts_column_type" not in meta or is_column_excluded(meta):
         return False
     if any(not k.startswith("ts_") for k in meta):
         return False

@@ -4098,17 +4098,19 @@ Properties with no `ts_*` tag at all (`value_casing`, `custom_order`,
 custom-map geo role are **reported** in `unmapped_properties`, never dropped
 in silence.
 
-**The `ts_*` ownership boundary.** `--update-metadata` clears and
-rewrites only the tags `build` can itself emit — declared as
-`GENERATED_COLUMN_META_KEYS` / `GENERATED_MODEL_META_KEYS` in
-`dbt_build_export.py`. Every other key is preserved: non-`ts_*` keys another
-tool owns, `ts_column_exclude` (hand-authored by definition), and any tag a
-ThoughtSpot release newer than this build adds. Those are reported in
-`preserved_meta` and on stderr rather than silently kept, and `diff` excludes
-them from `modified_meta` so it reports exactly what `sync` applies. An earlier
-revision of this work cleared the whole `ts_*` namespace, deleting hand-authored
-tags with no diagnostic. `TestGeneratedMetaKeyBoundary` fails if the declared
-set and the emitters drift apart in either direction.
+**`--update-metadata` never deletes a tag.** It writes every `ts_*` value the
+fresh generation carries over the existing one and keeps everything else as
+written — non-`ts_*` keys, and any `ts_*` tag the ThoughtSpot Model does not set.
+A missing setting cannot tell "never set in ThoughtSpot" from "removed there", and
+clearing on that guess deleted hand-authored `ts_hidden` / `ts_calendar_type` /
+`ts_currency_type` / `ts_geo_config` values with no report. Kept `ts_*` tags are
+listed in `preserved_meta` and on stderr, and `diff`'s `modified_meta` reports
+only what `sync` writes, so a kept tag is never shown as a pending removal.
+
+A column that left the Model is deleted only when its entry holds nothing but
+what `build` generates (`ts_column_type` present, only `ts_*` meta, no
+description, no other dbt settings, no tests beyond the managed relationship
+test); every other removed column is reported for review.
 
 ```bash
 ts dbt-export diff --model export/model.json --tables-dir export/ \

@@ -635,23 +635,18 @@ class TestExcludedColumnNeverAutoDeleted:
 
 
 class TestSyncPreservesUnmanagedTsTags(TestSyncUpdateMetadata):
-    """Regression: `sync --update-metadata` used to clear EVERY `ts_*` key
-    absent from the fresh generation, silently deleting hand-authored tags.
+    """`sync --update-metadata` never deletes a `ts_*` tag. A tag the fresh
+    generation lacks is kept as written and reported, because its absence is
+    ambiguous: ThoughtSpot may never have had the setting (someone wrote it in
+    dbt to send it TO ThoughtSpot) or it may have been removed there.
 
-    The original trigger was the four documented tags the exporter did not
-    emit (`ts_hidden`, `ts_calendar_type`, `ts_currency_type`,
-    `ts_geo_config`) — all four are generated now, so they are no longer
-    examples of the hazard. What remains outside the ownership boundary, and
-    what this class guards, is:
+    The earlier rule cleared every generator-owned tag the fresh Model lacked.
+    Once `ts_hidden`, `ts_calendar_type`, `ts_currency_type` and
+    `ts_geo_config` became owned, that deleted hand-authored values with no
+    report (PR #506 review, blocker 5).
 
-      - `ts_column_exclude`, hand-authored by definition (no Model property
-        produces it);
-      - any tag a FUTURE ThoughtSpot release adds that this build predates —
-        the forward-compatibility case, and the reason the boundary is an
-        allowlist rather than a hardcoded denylist of four names.
-
-    Reuses the parent's fixtures — the fresh Model has no such tags, which is
-    exactly the condition that triggered the loss.
+    Reuses the parent's fixtures — the fresh Model has none of these tags,
+    which is exactly the condition that triggered the loss.
     """
 
     _HAND_AUTHORED = {
@@ -686,7 +681,7 @@ class TestSyncPreservesUnmanagedTsTags(TestSyncUpdateMetadata):
         self._setup_with_hand_authored(tmp_path)
         result = self._invoke_with_flag(tmp_path, "--update-metadata")
         assert result.exit_code == 0, result.output
-        assert "Preserved 2 hand-authored ts_* tag(s)" in result.output
+        assert "Kept 2 ts_* tag(s) ThoughtSpot does not set" in result.output
         assert "stg_orders.CUSTOMER_ID" in result.output
         payload = json.loads(result.stdout[result.stdout.index("{"):])
         assert sorted(payload["preserved_meta"]["stg_orders.CUSTOMER_ID"]) == sorted(
@@ -702,9 +697,26 @@ class TestSyncPreservesUnmanagedTsTags(TestSyncUpdateMetadata):
                     if c["name"] == "CUSTOMER_ID")["config"]["meta"]
         assert meta.get("ts_column_exclude") == "yes"
 
-    def test_owned_tag_removed_in_thoughtspot_is_still_cleared(self, tmp_path):
-        """The preservation must not neuter the actual sync: a tag the
-        generator OWNS, absent from a fresh generation, still gets cleared."""
+    def test_review_case_hand_authored_owned_tags_survive(self, tmp_path):
+        """The exact case the review executed: owned tags written by hand were
+        cleared and not reported. All of them must survive and be listed."""
+        hand = {"ts_hidden": "yes", "ts_calendar_type": "fiscal",
+                "ts_geo_config": {"type": "country"}, "ts_column_exclude": "no",
+                "owner": "finance"}
+        path = self._setup_with_hand_authored(tmp_path, hand)
+        result = self._invoke_with_flag(tmp_path, "--update-metadata")
+        assert result.exit_code == 0, result.output
+        meta = next(c for c in yaml.safe_load(path.read_text())["models"][0]["columns"]
+                    if c["name"] == "CUSTOMER_ID")["config"]["meta"]
+        for key, value in hand.items():
+            assert meta.get(key) == value, key
+        payload = json.loads(result.stdout[result.stdout.index("{"):])
+        assert set(payload["preserved_meta"]["stg_orders.CUSTOMER_ID"]) >= {
+            "ts_hidden", "ts_calendar_type", "ts_geo_config", "ts_column_exclude"}
+
+    def test_tag_thoughtspot_does_not_set_is_kept_and_reported(self, tmp_path):
+        """Even a tag `build` does generate is kept when the fresh Model lacks
+        it — the removal is reported for a human, never applied."""
         self._setup_project(tmp_path)
         path = tmp_path / "models" / "staging" / "schema.yml"
         doc = yaml.safe_load(path.read_text())
@@ -714,10 +726,23 @@ class TestSyncPreservesUnmanagedTsTags(TestSyncUpdateMetadata):
 
         result = self._invoke_with_flag(tmp_path, "--update-metadata")
         assert result.exit_code == 0, result.output
-        doc = yaml.safe_load(path.read_text())
-        meta = next(c for c in doc["models"][0]["columns"]
+        meta = next(c for c in yaml.safe_load(path.read_text())["models"][0]["columns"]
                     if c["name"] == "AMOUNT")["config"]["meta"]
-        assert "ts_format_pattern" not in meta
+        assert meta["ts_format_pattern"] == "#,##0.00"
+        payload = json.loads(result.stdout[result.stdout.index("{"):])
+        assert "ts_format_pattern" in payload["preserved_meta"]["stg_orders.AMOUNT"]
+
+    def test_diff_does_not_report_a_kept_tag_as_a_change(self, tmp_path):
+        """`diff` shows what `sync` writes; a kept tag is not a pending removal."""
+        self._setup_project(tmp_path)
+        path = tmp_path / "models" / "staging" / "schema.yml"
+        doc = yaml.safe_load(path.read_text())
+        col = next(c for c in doc["models"][0]["columns"] if c["name"] == "AMOUNT")
+        col["config"]["meta"]["ts_format_pattern"] = "#,##0.00"
+        path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+        payload = self._run_diff(tmp_path)
+        mods = (payload["changed_tables"].get("stg_orders") or {}).get("modified_meta") or []
+        assert all(m["column"] != "AMOUNT" for m in mods)
 
     def _run_diff(self, tmp_path):
         export_dir = tmp_path / "export"
@@ -1225,3 +1250,46 @@ class TestBuildModelGuidAndImport:
         result = self._invoke(tmp_path, "--output", str(out))
         assert result.exit_code == 0, result.output
         assert "model_tables" not in result.stdout
+
+
+class TestDeletionGate:
+    """`_is_ts_only_column` decides which removed columns `sync --update-metadata`
+    deletes. "Removed" means "in dbt, not in the Model", and a Model usually
+    exposes only some columns — so anything not demonstrably generated must be
+    kept (PR #506 review, blocker 5)."""
+
+    GENERATED = {"name": "AMOUNT",
+                 "config": {"meta": {"ts_column_type": "measure", "ts_aggregation": "sum"}}}
+
+    def _gate(self, entry):
+        from ts_cli.dbt.case_b_plan import _is_ts_only_column
+        return _is_ts_only_column(entry)
+
+    def test_a_generated_entry_is_deletable(self):
+        assert self._gate(self.GENERATED) is True
+        with_rel = {**self.GENERATED, "data_tests": [{"relationships": {"arguments": {}}}]}
+        assert self._gate(with_rel) is True
+
+    def test_kept(self):
+        cases = {
+            "bare entry, no meta": {"name": "AMOUNT"},
+            "empty meta": {"name": "AMOUNT", "config": {"meta": {}}},
+            "legacy bare meta": {"name": "AMOUNT", "meta": {"owner": "finance"}},
+            "legacy bare meta beside config": {**self.GENERATED, "meta": {"owner": "finance"}},
+            "config tags": {"name": "AMOUNT", "config": {
+                "meta": {"ts_column_type": "measure"}, "tags": ["pii"]}},
+            "column-level tags": {**self.GENERATED, "tags": ["pii"]},
+            "data_type": {**self.GENERATED, "data_type": "number"},
+            "quote": {**self.GENERATED, "quote": True},
+            "constraints": {**self.GENERATED, "constraints": [{"type": "not_null"}]},
+            "ts tags but no ts_column_type": {"name": "AMOUNT",
+                                              "config": {"meta": {"ts_hidden": "yes"}}},
+            "non-ts meta key": {"name": "AMOUNT", "config": {
+                "meta": {"ts_column_type": "measure", "owner": "finance"}}},
+            "description": {**self.GENERATED, "description": "Order amount"},
+            "custom test": {**self.GENERATED, "data_tests": ["not_null"]},
+            "excluded": {"name": "AMOUNT", "config": {
+                "meta": {"ts_column_type": "measure", "ts_column_exclude": "yes"}}},
+        }
+        for label, entry in cases.items():
+            assert self._gate(entry) is False, label

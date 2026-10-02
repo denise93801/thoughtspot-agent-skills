@@ -376,28 +376,27 @@ the Jinja out of the files `sync` touches. Never "fix" a file by rewriting it.
 
 To also apply `ts_*` metadata changes to existing tables (updated
 descriptions, synonyms, ai_context, RLS rules, new/changed relationships),
-add `--update-metadata`. This flag also auto-deletes column entries whose
-content is entirely `ts_*`-originated when the column was removed from the
-ThoughtSpot Model (non-`ts_*` meta keys, custom descriptions, and custom
-data tests prevent auto-deletion — those are left for manual review).
+add `--update-metadata`. This flag also deletes a column entry when the column
+left the ThoughtSpot Model **and** the entry holds nothing but what `build`
+generates: `ts_column_type` present, only `ts_*` meta keys, no description, no
+other dbt settings (`tags`, `data_type`, `quote`, `constraints`, a legacy bare
+`meta:`), and no tests beyond the managed relationship test. Every other removed
+column is left in place for manual review — a Model usually shows only some of a
+table's columns, so "not in the Model" alone never justifies a delete.
 Columns tagged `ts_column_exclude: yes` in `schema.yml` are deliberately absent
 from the Model, so `diff` never reports them as removed/changed and `sync`
 never deletes them.
 
-**`--update-metadata` only touches the tags `ts dbt-export build` can write.**
-It clears and rewrites all 13 documented column tags, the three join tags, the
-ts-cli extensions (`ts_ai_context`, `ts_display_name`, `ts_formula`) and
-model-level `ts_rls_rules` — the set declared as `GENERATED_COLUMN_META_KEYS` /
-`GENERATED_MODEL_META_KEYS`. Every other `ts_*` key is preserved untouched,
-because this generator cannot produce it and so a human must have: today that
-is `ts_column_exclude` and any tag a ThoughtSpot release newer than this build
-adds. Preserved tags are listed in the `preserved_meta` field of the output and
-on stderr; read them out to the user so it's clear they were kept deliberately
-rather than missed. (An earlier revision of this work deleted them silently — see
-[references/open-items.md](references/open-items.md) #17. The four tags that
-originally triggered that bug — `ts_hidden`, `ts_calendar_type`,
-`ts_currency_type`, `ts_geo_config` — are themselves generated now,
-so the boundary now serves forward-compatibility rather than those four.)
+**`--update-metadata` never deletes a tag.** It writes every `ts_*` value the
+ThoughtSpot Model carries over the one in `schema.yml`, and keeps any `ts_*` tag
+the Model does not set — `ts_hidden`, a synonym, `ts_column_exclude`, a tag from a
+newer ThoughtSpot — exactly as written. A missing setting is ambiguous (never set
+in ThoughtSpot, or removed there), and guessing "removed" deleted hand-authored
+values. Kept tags are listed in the `preserved_meta` field of the output and on
+stderr: read them out to the user, and say that any setting removed in
+ThoughtSpot has to be deleted from `schema.yml` by hand. `diff` reports only the
+changes `sync` will make, so a kept tag never appears there as a pending removal.
+(History: [references/open-items.md](references/open-items.md) #17.)
 
 **Before committing auto-deleted columns:** if `--update-metadata` removed
 any columns, run `ts columns impact` first to confirm nothing in ThoughtSpot

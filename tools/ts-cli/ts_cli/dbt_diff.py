@@ -95,13 +95,11 @@ def parse_schema_yaml_columns(schema_yaml_text: str) -> dict[str, dict[str, dict
 def _owned_meta(meta: dict) -> dict:
     """The subset of a column's `meta` that `ts dbt-export build` can produce.
 
-    A `ts_*` key outside `GENERATED_COLUMN_META_KEYS` (`ts_hidden`,
-    `ts_calendar_type`, `ts_currency_type`, `ts_geo_config`,
-    `ts_column_exclude`, or a tag from a newer ThoughtSpot) is hand-authored,
-    and `sync --update-metadata` deliberately preserves it. Comparing it here
+    A key outside `GENERATED_COLUMN_META_KEYS` (`ts_column_exclude`, a tag
+    from a newer ThoughtSpot, any non-`ts_*` key) can never appear in a fresh
+    generation, so `sync --update-metadata` never changes it. Comparing it here
     would report a change sync then declines to apply — the same trap the
-    `modified_description` guard below avoids. Non-`ts_*` keys are excluded for
-    the same reason: another tool owns them.
+    `modified_description` guard below avoids.
     """
     from ts_cli.dbt_build_export import GENERATED_COLUMN_META_KEYS
     return {k: v for k, v in (meta or {}).items() if k in GENERATED_COLUMN_META_KEYS}
@@ -111,8 +109,11 @@ def _diff_column(col: str, cur_entry: dict, new_entry: dict, into: dict) -> None
     """Compare one shared column's meta/description/relationship and append
     any difference onto the `modified_meta`/`modified_description`/
     `*_relationship` lists in `into`."""
+    # Report exactly what `sync --update-metadata` writes: fresh values over the
+    # current ones, never a removal (case_b_plan._merge_ts_meta). A tag
+    # ThoughtSpot does not set is kept by sync, so it is not a change here.
     cur_meta = _owned_meta((cur_entry or {}).get("meta") or {})
-    new_meta = _owned_meta((new_entry or {}).get("meta") or {})
+    new_meta = {**cur_meta, **_owned_meta((new_entry or {}).get("meta") or {})}
     if cur_meta != new_meta:
         into["modified_meta"].append({"column": col, "current": cur_meta, "new": new_meta})
 

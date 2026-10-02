@@ -562,6 +562,21 @@ a newer ThoughtSpot — rather than those four.
 
 ---
 
+**Reopened and re-fixed 2026-10-02 (PR #506 review, blocker 5; never shipped).**
+The fix above protected only tags *outside* `GENERATED_COLUMN_META_KEYS`. When
+`ts_hidden`, `ts_calendar_type`, `ts_currency_type` and `ts_geo_config` became
+generated, they moved inside the set, so a hand-authored value was cleared again
+— and, being owned, it was reported as neither changed nor preserved. Decision
+(project owner, 2026-10-02): `sync --update-metadata` **never deletes a tag**. It
+writes fresh values over existing ones and keeps any `ts_*` tag the Model does
+not set, listing it in `preserved_meta`; `diff` reports only what `sync` writes.
+The trade-off is explicit: a setting removed in ThoughtSpot stays in `schema.yml`
+until a human removes it, which is visible, instead of a hand-written value
+disappearing, which was not. In the same pass the column-deletion gate
+(`_is_ts_only_column`) was tightened to entries that hold nothing but generated
+content, so an empty entry, a legacy bare `meta:` or `config: {tags: [pii]}` is
+no longer deleted. Tests: `TestSyncPreservesUnmanagedTsTags`, `TestDeletionGate`.
+
 ## #18 — Case A renamed tables and joins on the round trip — FIXED 2026-09-09 (never shipped)
 
 **The bug.** Case A named each staging model `stg_<table>`, which with no alias
