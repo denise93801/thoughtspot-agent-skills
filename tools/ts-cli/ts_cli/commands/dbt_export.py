@@ -876,6 +876,7 @@ def build_model_cmd(
             "Display-name collision — ThoughtSpot compares Model column names "
             f"case-insensitively:\n{listing}\n"
             "Give one of each pair a distinct ts_display_name in schema.yml.")
+    _refuse_formula_id_collisions(tml)
 
     _handle_schema_yml_rls(extract_table_rls_from_schema_yml(schema_text), rls_out)
 
@@ -952,3 +953,13 @@ def _import_model_tml(tml: dict, profile: str, model_guid: "str | None",
     }, indent=2))
     if status != "imported":
         raise SystemExit(f"Model import failed: {(error or '')[:500]}")
+
+
+def _refuse_formula_id_collisions(model_tml: dict) -> None:
+    """A shared formulas[].id binds two columns to one formula with no import
+    error — the wrong number, silently (PR #506 review, blocker 3)."""
+    from ts_cli.dbt.tags import find_formula_id_collisions
+    dupes = find_formula_id_collisions(model_tml)
+    if dupes:
+        listing = "\n".join(f"  {fid!r}: {', '.join(names)}" for fid, names in dupes)
+        raise SystemExit(f"Formula id collision — each formulas[].id must be unique:\n{listing}")

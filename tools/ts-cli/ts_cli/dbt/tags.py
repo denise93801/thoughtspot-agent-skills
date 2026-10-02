@@ -58,8 +58,31 @@ def _first_table_ref(expr: str) -> "str | None":
 
 
 def _formula_id(name: str) -> str:
-    """Stable formula ID from a display name: 'Rev per Cust' → 'formula_Rev_per_Cust'."""
-    return "formula_" + re.sub(r'[^A-Za-z0-9_]', '_', name)
+    """Formula ID from a display name: 'Rev per Cust' -> 'formula_Rev per Cust'.
+
+    The name is kept verbatim — the convention in thoughtspot-model-tml.md
+    ("formula_" + name, spaces preserved) and the one `add_formula_prefix` writes
+    into `[formula_<Name>]` cross-references. Replacing every non-[A-Za-z0-9_]
+    character with `_` made `Rev/Cust` and `Rev-Cust` share one id (so one
+    measure silently returned the other's number), collapsed every non-Latin
+    name to `formula___`, and left `[formula_Gross Margin]` references dangling
+    (PR #506 review, blocker 3). Distinct names now give distinct ids; an
+    identical name is a display-name collision, which callers already refuse.
+    """
+    return "formula_" + name
+
+
+def find_formula_id_collisions(model_tml: dict) -> list[tuple[str, list[str]]]:
+    """[(formula_id, [formula name, ...])] for any id two `formulas[]` share.
+
+    `columns[].formula_id` binds by id, so a shared id makes two columns compute
+    the same formula with no error at import. Checked separately from
+    find_display_name_collisions because the two can differ.
+    """
+    seen: dict[str, list[str]] = {}
+    for f in model_tml.get("model", {}).get("formulas", []) or []:
+        seen.setdefault(f.get("id") or "", []).append(f.get("name") or "")
+    return [(fid, names) for fid, names in seen.items() if len(names) > 1]
 # ---------------------------------------------------------------------------
 # ts_* metadata tags — column-level meta: block
 # ---------------------------------------------------------------------------

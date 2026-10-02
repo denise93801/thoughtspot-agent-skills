@@ -130,10 +130,10 @@ class TestSimple:
         man = _manifest([_simple("total_tips", "transactions", "sum", "TIP_AMOUNT",
                                  label="Total Tips", description="Sum of tips.")])
         r = translate_metrics(man, PATH)
-        assert r["formulas"] == [{"id": "formula_Total_Tips", "name": "Total Tips",
+        assert r["formulas"] == [{"id": "formula_Total Tips", "name": "Total Tips",
                                   "expr": "sum ( [TRANSACTIONS::TIP_AMOUNT] )"}]
         col = r["columns"][0]
-        assert col["formula_id"] == "formula_Total_Tips"
+        assert col["formula_id"] == "formula_Total Tips"
         assert col["properties"] == {"column_type": "MEASURE", "aggregation": "SUM"}
         assert col["description"] == "Sum of tips."
         assert r["unmapped"] == []
@@ -200,7 +200,7 @@ class TestRatioAndDerived:
         man = _manifest(self._base() + [_ratio("tip_rate", "transactions", "total_tips",
                                                "total_service_revenue", label="Tip Rate")])
         f = next(x for x in translate_metrics(man, PATH)["formulas"] if x["name"] == "Tip Rate")
-        assert f["expr"] == "safe_divide ( [formula_Total_Tips] , [formula_Total_Service_Revenue] )"
+        assert f["expr"] == "safe_divide ( [formula_Total Tips] , [formula_Total Service Revenue] )"
 
     def test_derived_substitutes_aliases_with_formula_refs(self):
         man = _manifest(self._base() + [_derived(
@@ -208,7 +208,7 @@ class TestRatioAndDerived:
             [("total_service_revenue", "revenue", None), ("total_discounts", "discounts", None)],
             label="Net Revenue")])
         f = next(x for x in translate_metrics(man, PATH)["formulas"] if x["name"] == "Net Revenue")
-        assert f["expr"] == "[formula_Total_Service_Revenue] - [formula_Total_Discounts_Given]"
+        assert f["expr"] == "[formula_Total Service Revenue] - [formula_Total Discounts Given]"
 
     def test_derived_over_ratio_resolves_in_second_pass(self):
         man = _manifest(self._base() + [
@@ -218,7 +218,7 @@ class TestRatioAndDerived:
                    label="Tip Rate")])
         r = translate_metrics(man, PATH)
         f = next(x for x in r["formulas"] if x["name"] == "Tip Pct")
-        assert f["expr"] == "[formula_Tip_Rate] * 100"
+        assert f["expr"] == "[formula_Tip Rate] * 100"
         assert r["unmapped"] == []
 
     def test_offset_and_filter_inputs_are_unmapped(self):

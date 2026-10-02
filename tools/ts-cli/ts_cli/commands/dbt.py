@@ -608,6 +608,8 @@ def build_model(
             f"case-insensitively:\n{listing}\n"
             "Give one of each pair a distinct ts_display_name in schema.yml, "
             "re-run the dbt job, then re-run build-model.")
+    from ts_cli.commands.dbt_export import _refuse_formula_id_collisions
+    _refuse_formula_id_collisions(model_tml)
 
     # Pin every model_tables[] ref with an fqn. A name-only ref imports fine in
     # a clean Org but fails (error 14502) as soon as a same-named Table exists —

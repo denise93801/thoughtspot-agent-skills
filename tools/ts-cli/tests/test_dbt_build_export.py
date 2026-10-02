@@ -2251,3 +2251,60 @@ class TestAliasedProjectReadersAgree:
         manifest["semantic_models"] = {"semantic_model.p.appts": {
             "name": "appts", "depends_on": {"nodes": ["model.p.stg_appointments"]}}}
         assert semantic_models_in_scope(manifest, self.PATH)["appts"]["table"] == "APPOINTMENTS"
+
+
+# ---------------------------------------------------------------------------
+# PR #506 review, blocker 3: formula ids were `formula_` + the name with every
+# non-[A-Za-z0-9_] replaced by `_`, so distinct names shared an id and one
+# measure silently returned another's number.
+# ---------------------------------------------------------------------------
+
+class TestFormulaIdsStayDistinct:
+    PAIRS = [("Rev/Cust", "Rev-Cust"), ("Margin %", "Margin #"), ("収益", "利益")]
+
+    def test_distinct_names_give_distinct_ids(self):
+        from ts_cli.dbt.tags import _formula_id
+        for a, b in self.PAIRS:
+            assert _formula_id(a) != _formula_id(b), (a, b)
+        assert _formula_id("Gross Margin") == "formula_Gross Margin"
+
+    def _schema_with_formulas(self, names_exprs):
+        cols = [{"name": "AMOUNT", "config": {"meta": {"ts_column_type": "measure"}}}]
+        cols += [{"name": n, "config": {"meta": {"ts_column_type": "measure", "ts_formula": e}}}
+                 for n, e in names_exprs]
+        return yaml.safe_dump({"version": 2, "models": [
+            {"name": "orders", "columns": cols}]}, sort_keys=False, allow_unicode=True)
+
+    def test_schema_yml_reader_binds_each_column_to_its_own_formula(self):
+        from ts_cli.dbt.model_from_schema_yml import build_model_tml_from_schema_yml
+        from ts_cli.dbt.tags import find_formula_id_collisions
+        names = [n for pair in self.PAIRS for n in pair]
+        model_tml = build_model_tml_from_schema_yml(
+            self._schema_with_formulas([(n, f"sum([ORDERS::AMOUNT]) * {i}")
+                                        for i, n in enumerate(names)]), "M")
+        model = model_tml["model"]
+        assert find_formula_id_collisions(model_tml) == []
+        by_id = {f["id"]: f for f in model["formulas"]}
+        for c in model["columns"]:
+            if "formula_id" in c:
+                assert by_id[c["formula_id"]]["name"] == c["name"]
+
+    def test_id_cross_reference_resolves(self):
+        """`[formula_Gross Margin]` must name a real formulas[].id — the
+        sanitized id `formula_Gross_Margin` left it dangling (lint I13)."""
+        from ts_cli.dbt.model_from_schema_yml import build_model_tml_from_schema_yml
+        from ts_cli.tml_lint import lint_tml
+        model_tml = build_model_tml_from_schema_yml(self._schema_with_formulas([
+            ("Gross Margin", "sum([ORDERS::AMOUNT])"),
+            ("Margin Share", "[formula_Gross Margin] / 2"),
+        ]), "M")
+        assert {f["id"] for f in model_tml["model"]["formulas"]} == {
+            "formula_Gross Margin", "formula_Margin Share"}
+        findings = lint_tml(model_tml)
+        assert not [f for f in findings if "I13" in str(f)], findings
+
+    def test_collision_finder_reports_a_shared_id(self):
+        from ts_cli.dbt.tags import find_formula_id_collisions
+        tml = {"model": {"formulas": [{"id": "formula_X", "name": "X"},
+                                      {"id": "formula_X", "name": "X "}]}}
+        assert find_formula_id_collisions(tml) == [("formula_X", ["X", "X "])]
