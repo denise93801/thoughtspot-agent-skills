@@ -19,7 +19,7 @@ from pathlib import Path
 import typer
 import yaml
 
-from ts_cli.dbt.formula_pass import print_double_aggregation
+from ts_cli.dbt.formula_pass import print_double_aggregation, print_reaggregation_kept
 from ts_cli.dbt.build_guards import (
     merge_source_block, rls_rules_dest as _rls_dest, unmapped_label as _unmapped_label)
 from ts_cli.dbt.case_b_plan import (
@@ -878,6 +878,7 @@ def build_model_cmd(
     tml = build_model_tml_from_schema_yml(schema_text, model_name)
 
     print_double_aggregation(tml.pop("_double_aggregation_collapsed", []))
+    print_reaggregation_kept(tml.pop("_reaggregation_kept", []))
     excluded = tml.pop("_excluded_columns", [])
     if excluded:
         typer.echo(

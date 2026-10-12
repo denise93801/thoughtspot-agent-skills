@@ -103,7 +103,8 @@ skill invokes:
   byte-identical to their backups.
 
 Rules on a Model's base tables cannot be read from the Model, so a Model source or a
-Model's column reports the RLS and CSR rows unchecked, and the verdict is `UNVERIFIED`.
+Model's column reports the RLS and CSR rows unchecked, and the verdict is the unverified
+state (`BLOCKED_VERIFY_SECURITY_FIRST`).
 
 ---
 

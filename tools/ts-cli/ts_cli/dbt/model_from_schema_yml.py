@@ -18,7 +18,7 @@ from collections import defaultdict
 
 import yaml
 
-from .formula_pass import collapse_double_aggregation
+from .formula_pass import collapse_double_aggregation, find_reaggregation_kept
 from .tags import (
     _formula_id,
     is_column_excluded,
@@ -235,6 +235,7 @@ def build_model_tml_from_schema_yml(
     # column that clashes with a formula — which must instead reach the caller's
     # find_display_name_collisions refusal, as it always has.
     double_agg = collapse_double_aggregation(formulas)
+    reagg_kept = find_reaggregation_kept(formulas)
 
     model_doc: dict = {
         "name": model_name,
@@ -247,6 +248,7 @@ def build_model_tml_from_schema_yml(
     if excluded_columns:
         out["_excluded_columns"] = sorted(excluded_columns)   # diagnostics; caller strips
     out["_double_aggregation_collapsed"] = double_agg         # diagnostics (may be []); caller strips
+    out["_reaggregation_kept"] = reagg_kept                   # diagnostics (may be []); caller strips
     return out
 
 

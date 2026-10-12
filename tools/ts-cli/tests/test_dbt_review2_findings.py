@@ -286,3 +286,54 @@ class TestDoubleAggregationIsNeverSilent:
             {"name": k, "config": {"meta": v}} for k, v in self._META.items()]}]}
         tml = build_model_tml_from_schema_yml(yaml.safe_dump(doc), "M")
         assert [d["formula"] for d in tml["_double_aggregation_collapsed"]] == ["Tips Again"]
+
+
+class TestOnlySumIsCollapsed:
+    """PR #506 review round 3, blocker 2: count/average/min/max over an
+    already-aggregated formula change meaning when collapsed, so dbt input
+    collapses sum alone and reports the rest, leaving the user's text as written."""
+
+    _META = {
+        "Rev": {"ts_formula": "sum ( [ORDERS::AMOUNT] )", "ts_column_type": "measure"},
+        "Rev Again": {"ts_formula": "sum ( [formula_Rev] )", "ts_column_type": "measure"},
+        "Rev Count": {"ts_formula": "count ( [formula_Rev] )", "ts_column_type": "measure"},
+        "Rev Avg": {"ts_formula": "average ( [formula_Rev] )", "ts_column_type": "measure"},
+        "Rev Min": {"ts_formula": "min ( [formula_Rev] )", "ts_column_type": "measure"},
+        "Rev Max": {"ts_formula": "MAX([formula_Rev])", "ts_column_type": "measure"},
+        "Scalar": {"ts_formula": "[ORDERS::A] - [ORDERS::B]", "ts_column_type": "measure"},
+        "Scalar Count": {"ts_formula": "count ( [formula_Scalar] )", "ts_column_type": "measure"},
+    }
+    _UNCHANGED = ("Rev Count", "Rev Avg", "Rev Min", "Rev Max", "Scalar Count")
+
+    def _check(self, tml):
+        exprs = {f["name"]: f["expr"] for f in tml["model"]["formulas"]}
+        assert exprs["Rev Again"] == "[formula_Rev]"
+        for name in self._UNCHANGED:
+            assert exprs[name] == self._META[name]["ts_formula"], name
+        assert [d["formula"] for d in tml["_double_aggregation_collapsed"]] == ["Rev Again"]
+        # A wrapper over a SCALAR formula is a real aggregation: neither collapsed nor reported.
+        assert {(d["formula"], d["wrapper"]) for d in tml["_reaggregation_kept"]} == {
+            ("Rev Count", "count"), ("Rev Avg", "average"),
+            ("Rev Min", "min"), ("Rev Max", "max")}
+
+    def test_schema_yml_path(self):
+        import yaml
+        from ts_cli.dbt.model_from_schema_yml import build_model_tml_from_schema_yml
+        doc = {"version": 2, "models": [{"name": "orders", "columns": [
+            {"name": k, "config": {"meta": v}} for k, v in self._META.items()]}]}
+        self._check(build_model_tml_from_schema_yml(yaml.safe_dump(doc), "M"))
+
+    def test_manifest_path(self):
+        from ts_cli.dbt_build_export import build_model_tml_from_manifest
+        node = {"resource_type": "model", "name": "orders", "alias": "orders",
+                "original_file_path": "models/m/orders.sql", "config": {"meta": {}},
+                "columns": {k: {"config": {"meta": v}} for k, v in self._META.items()}}
+        self._check(build_model_tml_from_manifest({"nodes": {"model.p.orders": node}}, {},
+                                                  "models/m", "M", metrics=False))
+
+    def test_kept_wrapper_is_warned_on_stderr(self, capsys):
+        from ts_cli.dbt.formula_pass import print_reaggregation_kept
+        print_reaggregation_kept([{"formula": "Rev Count", "wrapper": "count",
+                                   "ref": "Rev", "expr": "count ( [formula_Rev] )"}])
+        err = capsys.readouterr().err
+        assert "WARNING" in err and "Rev Count" in err and "left as written" in err

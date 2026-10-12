@@ -34,7 +34,7 @@ from ts_cli.dbt.cloud_api import (
     token_from_keychain,
     trigger_run,
 )
-from ts_cli.dbt.formula_pass import print_double_aggregation
+from ts_cli.dbt.formula_pass import print_double_aggregation, print_reaggregation_kept
 from ts_cli.dbt.artifacts import load_local_catalog, load_local_manifest, resolve_artifact_zip
 from ts_cli.dbt.inspect import group_manifest_models
 from ts_cli.profile_ops import get_profile, load_platform_profiles
@@ -738,6 +738,7 @@ def build_model(
     mf = model_tml.pop("_metrics_report", None)
     _print_metrics_report(mf)
     print_double_aggregation(model_tml.pop("_double_aggregation_collapsed", []))
+    print_reaggregation_kept(model_tml.pop("_reaggregation_kept", []))
     if model_guid:
         # guid belongs at the document root (see thoughtspot-model-tml.md), not under model:
         model_tml = {"guid": model_guid, **model_tml}

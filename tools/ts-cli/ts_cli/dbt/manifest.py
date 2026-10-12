@@ -15,7 +15,8 @@ from collections import defaultdict
 
 from .constraint_joins import add_uncovered_joins, constraint_joins, relation_tables
 from .formula_pass import (
-    collapse_double_aggregation, rename_colliding_columns, repoint_formula_refs)
+    collapse_double_aggregation, find_reaggregation_kept, rename_colliding_columns,
+    repoint_formula_refs)
 from .model_from_schema_yml import rls_rules_block
 from .node_paths import (
     model_in_path, parse_ts_join_test, ref_tables, table_name as _node_table_name)
@@ -349,6 +350,7 @@ def build_model_tml_from_manifest(
     # Reported on its own key, not inside the metrics report: the collapse runs
     # on ts_formula columns too, including with --no-metrics (no report at all).
     double_agg = collapse_double_aggregation(formulas)
+    reagg_kept = find_reaggregation_kept(formulas)
 
     model_doc: dict = {
         "name": model_name,
@@ -370,6 +372,8 @@ def build_model_tml_from_manifest(
         out["_skipped_joins"] = skipped_joins                 # diagnostics only — caller strips
     if double_agg:
         out["_double_aggregation_collapsed"] = double_agg     # diagnostics only — caller strips
+    if reagg_kept:
+        out["_reaggregation_kept"] = reagg_kept               # diagnostics only — caller strips
     if metrics_report is not None:
         metrics_report["entity_joins"] = entity_join_report
     if metrics_report and (metrics_report["formulas"] or metrics_report["unmapped"]

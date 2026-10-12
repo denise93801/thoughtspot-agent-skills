@@ -21,7 +21,10 @@ How each helper maps onto dbt's existing, live-verified collision policy:
   emits no parameters.
 * `fix_double_aggregation` — collapses `sum ( [formula_X] )` to `[formula_X]` when
   X is already aggregated. Keyed by formula ID (minus `formula_`), not by display
-  name, because `tags._formula_id` escapes brackets, so the two can differ.
+  name, because `tags._formula_id` escapes brackets, so the two can differ. Only
+  the `sum` form is passed in: the helper also collapses count/average/min/max,
+  which changes what a hand-written formula means, so those are reported instead
+  (`find_reaggregation_kept`) and left for the user to decide.
 
 Pure functions, no I/O.
 """
@@ -30,7 +33,8 @@ from __future__ import annotations
 import re
 from typing import Callable
 
-from ts_cli.formula_common import fix_double_aggregation, resolve_name_collisions
+from ts_cli.formula_common import (
+    expr_is_aggregated, fix_double_aggregation, resolve_name_collisions)
 
 FORMULA_ID_PREFIX = "formula_"
 
@@ -76,20 +80,62 @@ def print_double_aggregation(changes: list) -> None:
               f"removed — {d['from']}  →  {d['to']}", file=sys.stderr)
 
 
-def collapse_double_aggregation(formulas: list[dict]) -> list[dict]:
-    """Apply `fix_double_aggregation` to every formula (mutated in place).
+def print_reaggregation_kept(kept: list) -> None:
+    """stderr warning per non-sum re-aggregation left as the user wrote it."""
+    import sys
+    for d in kept:
+        print(f"  WARNING: Formula {d['formula']!r}: {d['wrapper']} over the already-aggregated "
+              f"[formula_{d['ref']}] was left as written ({d['expr']}). Check it means what "
+              f"you intend; only sum is collapsed automatically.", file=sys.stderr)
 
+
+# 2026-10 (PR #506 review round 3, blocker 2): the shared fix_double_aggregation
+# also collapses count/average/min/max wrappers, but for hand-written ts_formula
+# text only sum is close to equivalent — count ( [formula_Rev] ) -> [formula_Rev]
+# is a different metric. So dbt feeds it the sum-wrapped references alone, and
+# reports every other wrapper over an aggregated formula untouched.
+_SUM_WRAPPED_REF_RE = re.compile(r"\bsum\s*\(\s*\[formula_[^\]]+\]\s*\)", re.IGNORECASE)
+_OTHER_WRAPPED_REF_RE = re.compile(
+    r"\b(count|average|max|min)\s*\(\s*\[formula_([^\]]+)\]\s*\)", re.IGNORECASE)
+
+
+def _formula_exprs(formulas: list[dict]) -> dict[str, str]:
+    return {f["id"][len(FORMULA_ID_PREFIX):]: f["expr"] for f in formulas
+            if str(f.get("id", "")).startswith(FORMULA_ID_PREFIX)}
+
+
+def collapse_double_aggregation(formulas: list[dict]) -> list[dict]:
+    """Collapse `sum ( [formula_X] )` to `[formula_X]` when X is already
+    aggregated, via `fix_double_aggregation` (formulas mutated in place).
+
+    No other wrapper is rewritten — see `find_reaggregation_kept`.
     Returns `[{"formula", "from", "to"}]` for each expression it changed.
     """
-    exprs = {f["id"][len(FORMULA_ID_PREFIX):]: f["expr"] for f in formulas
-             if str(f.get("id", "")).startswith(FORMULA_ID_PREFIX)}
+    exprs = _formula_exprs(formulas)
     changes: list[dict] = []
     for f in formulas:
-        new = fix_double_aggregation(f["expr"], exprs)
+        new = _SUM_WRAPPED_REF_RE.sub(
+            lambda m: fix_double_aggregation(m.group(0), exprs), f["expr"])
         if new != f["expr"]:
             changes.append({"formula": f["name"], "from": f["expr"], "to": new})
             f["expr"] = new
     return changes
+
+
+def find_reaggregation_kept(formulas: list[dict]) -> list[dict]:
+    """Every count/average/min/max wrapped around an already-aggregated formula,
+    which `collapse_double_aggregation` deliberately leaves alone.
+
+    Returns `[{"formula", "wrapper", "ref", "expr"}]` for the caller to report.
+    """
+    exprs = _formula_exprs(formulas)
+    kept: list[dict] = []
+    for f in formulas:
+        for m in _OTHER_WRAPPED_REF_RE.finditer(f["expr"]):
+            if expr_is_aggregated(exprs.get(m.group(2), "")):
+                kept.append({"formula": f["name"], "wrapper": m.group(1).lower(),
+                             "ref": m.group(2), "expr": f["expr"]})
+    return kept
 
 
 def repoint_formula_refs(formulas: list[dict], id_map: dict[str, str]) -> list[dict]:
